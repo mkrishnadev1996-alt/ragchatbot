@@ -1,15 +1,20 @@
 import json
-from typing import List, Optional, Dict, Any
+from typing import Any
+
 from openai import OpenAI
 
+
 class AIGenerator:
-    """Handles interactions with an OpenAI-compatible chat API (Groq, Google Gemini, etc.) for generating responses"""
+    """Handles interactions with an OpenAI-compatible chat API (Groq, Google Gemini, etc.)
+    for generating responses"""
 
     # Static system prompt to avoid rebuilding on each call
-    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to a comprehensive search tool for course information.
+    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational
+content with access to a comprehensive search tool for course information.
 
 Search Tool Usage:
-- Use the search tool **only** for questions about specific course content or detailed educational materials
+- Use the search tool **only** for questions about specific course content
+  or detailed educational materials
 - **One search per query maximum**
 - Synthesize search results into accurate, fact-based responses
 - If search yields no results, state this clearly without offering alternatives
@@ -18,7 +23,8 @@ Response Protocol:
 - **General knowledge questions**: Answer using existing knowledge without searching
 - **Course-specific questions**: Search first, then answer
 - **No meta-commentary**:
- - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
+ - Provide direct answers only — no reasoning process, search explanations,
+   or question-type analysis
  - Do not mention "based on the search results"
 
 
@@ -35,16 +41,15 @@ Provide only the direct answer to what was asked.
         self.model = model
 
         # Pre-build base API parameters
-        self.base_params = {
-            "model": self.model,
-            "temperature": 0,
-            "max_tokens": 800
-        }
+        self.base_params = {"model": self.model, "temperature": 0, "max_tokens": 800}
 
-    def generate_response(self, query: str,
-                         conversation_history: Optional[List[Dict[str, str]]] = None,
-                         tools: Optional[List] = None,
-                         tool_manager=None) -> str:
+    def generate_response(
+        self,
+        query: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        tools: list | None = None,
+        tool_manager=None,
+    ) -> str:
         """
         Generate AI response with optional tool usage and conversation context.
 
@@ -59,16 +64,13 @@ Provide only the direct answer to what was asked.
             Generated response as string
         """
 
-        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self.SYSTEM_PROMPT}]
         if conversation_history:
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": query})
 
         # Prepare API call parameters
-        api_params = {
-            **self.base_params,
-            "messages": messages
-        }
+        api_params: dict[str, Any] = {**self.base_params, "messages": messages}
 
         # Add tools if available
         if tools:
@@ -86,7 +88,9 @@ Provide only the direct answer to what was asked.
         # Return direct response
         return message.content or ""
 
-    def _handle_tool_execution(self, assistant_message, messages: List[Dict[str, Any]], tool_manager):
+    def _handle_tool_execution(
+        self, assistant_message, messages: list[dict[str, Any]], tool_manager
+    ):
         """
         Handle execution of tool calls and get follow-up response.
 
@@ -102,40 +106,32 @@ Provide only the direct answer to what was asked.
         messages = messages.copy()
 
         # Add AI's tool call request
-        messages.append({
-            "role": "assistant",
-            "content": assistant_message.content,
-            "tool_calls": [
-                {
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
+        messages.append(
+            {
+                "role": "assistant",
+                "content": assistant_message.content,
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        },
                     }
-                }
-                for tool_call in assistant_message.tool_calls
-            ]
-        })
+                    for tool_call in assistant_message.tool_calls
+                ],
+            }
+        )
 
         # Execute all tool calls and append each result as its own tool message
         for tool_call in assistant_message.tool_calls:
             arguments = json.loads(tool_call.function.arguments or "{}")
-            tool_result = tool_manager.execute_tool(
-                tool_call.function.name,
-                **arguments
-            )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": tool_result
-            })
+            tool_result = tool_manager.execute_tool(tool_call.function.name, **arguments)
+            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": tool_result})
 
         # Prepare final API call without tools
-        final_params = {
-            **self.base_params,
-            "messages": messages
-        }
+        final_params: dict[str, Any] = {**self.base_params, "messages": messages}
 
         # Get final response
         final_response = self.client.chat.completions.create(**final_params)
