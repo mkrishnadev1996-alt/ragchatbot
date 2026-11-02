@@ -13,3 +13,25 @@ dependencies = [
     "python-dotenv==1.1.1",
     "openai==3.42.1",
 ]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# app.py must set the warnings filter before importing rag_system (which pulls in chromadb)
+"backend/app.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_unused_ignores = true
+check_untyped_defs = true
