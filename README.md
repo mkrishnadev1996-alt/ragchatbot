@@ -4,14 +4,14 @@ A Retrieval-Augmented Generation (RAG) system designed to answer questions about
 
 ## Overview
 
-This application is a full-stack web application that enables users to query course materials and receive intelligent, context-aware responses. It uses ChromaDB for vector storage, Anthropic's Claude for AI generation, and provides a web interface for interaction.
+This application is a full-stack web application that enables users to query course materials and receive intelligent, context-aware responses. It uses ChromaDB for vector storage, any OpenAI-compatible LLM API (Groq, Google Gemini, etc.) for AI generation, and provides a web interface for interaction.
 
 
 ## Prerequisites
 
 - Python 3.13 or higher
 - uv (Python package manager)
-- An Anthropic API key (for Claude AI)
+- An API key for an OpenAI-compatible LLM provider, e.g. [Groq](https://console.groq.com/) or [Google AI Studio](https://aistudio.google.com/) (Gemini)
 - **For Windows**: Use Git Bash to run the application commands - [Download Git for Windows](https://git-scm.com/downloads/win)
 
 ## Installation
@@ -30,8 +30,11 @@ This application is a full-stack web application that enables users to query cou
    
    Create a `.env` file in the root directory:
    ```bash
-   ANTHROPIC_API_KEY=your_anthropic_api_key_here
+   LLM_API_KEY=your_api_key_here
+   LLM_BASE_URL=https://api.groq.com/openai/v1
+   LLM_MODEL=llama-3.3-70b-versatile
    ```
+   For Google Gemini instead, use `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/` and `LLM_MODEL=gemini-2.5-flash`. See `.env.example`.
 
 ## Running the Application
 

@@ -39,21 +39,16 @@ class SessionManager:
         self.add_message(session_id, "user", user_message)
         self.add_message(session_id, "assistant", assistant_message)
     
-    def get_conversation_history(self, session_id: Optional[str]) -> Optional[str]:
-        """Get formatted conversation history for a session"""
+    def get_conversation_history(self, session_id: Optional[str]) -> Optional[List[Dict[str, str]]]:
+        """Get conversation history as chat messages (role/content dicts) for a session"""
         if not session_id or session_id not in self.sessions:
             return None
-        
+
         messages = self.sessions[session_id]
         if not messages:
             return None
-        
-        # Format messages for context
-        formatted_messages = []
-        for msg in messages:
-            formatted_messages.append(f"{msg.role.title()}: {msg.content}")
-        
-        return "\n".join(formatted_messages)
+
+        return [{"role": msg.role, "content": msg.content} for msg in messages]
     
     def clear_session(self, session_id: str):
         """Clear all messages from a session"""
