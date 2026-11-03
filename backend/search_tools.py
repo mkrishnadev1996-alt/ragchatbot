@@ -23,7 +23,7 @@ class CourseSearchTool(Tool):
 
     def __init__(self, vector_store: VectorStore):
         self.store = vector_store
-        self.last_sources: list[dict[str, Any]] = []  # Track sources from last search
+        self.last_sources: list[str] = []  # Track sources from last search
 
     def get_tool_definition(self) -> dict[str, Any]:
         """Return OpenAI-compatible function tool definition for this tool"""

@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from rag_system import RAGSystem
 
@@ -88,6 +88,7 @@ class TestRAGSystem(unittest.TestCase):
         ])
 
         history = self.rag.session_manager.get_conversation_history(session_id)
+        assert history is not None
         self.assertEqual(history[-2:], [
             {"role": "user", "content": "follow up"},
             {"role": "assistant", "content": "new answer"},

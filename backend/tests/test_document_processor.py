@@ -4,7 +4,6 @@ import unittest
 
 from document_processor import DocumentProcessor
 
-
 COURSE_DOC = """Course Title: Test Course
 Course Link: https://example.com/course
 Course Instructor: Jane Doe
@@ -45,7 +44,8 @@ class TestChunkText(unittest.TestCase):
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 40)
         joined = " ".join(chunks)
-        for sentence in ["Alpha is first.", "Beta is second.", "Gamma is third.", "Delta is fourth."]:
+        sentences = ["Alpha is first.", "Beta is second.", "Gamma is third.", "Delta is fourth."]
+        for sentence in sentences:
             self.assertIn(sentence, joined)
 
     def test_overlap_repeats_last_sentence_in_next_chunk(self):
@@ -142,13 +142,19 @@ class TestProcessCourseDocument(unittest.TestCase):
         self.assertIn("one block of text", " ".join(c.content for c in chunks))
 
     def test_first_line_without_prefix_is_used_as_title(self):
-        content = "Raw Title Line\nCourse Link: https://x.test\nCourse Instructor: Ann\n\nLesson 0: Only\nSome text here.\n"
+        content = (
+            "Raw Title Line\nCourse Link: https://x.test\nCourse Instructor: Ann\n\n"
+            "Lesson 0: Only\nSome text here.\n"
+        )
         path = self._write("raw.txt", content)
         course, _ = self.processor.process_course_document(path)
         self.assertEqual(course.title, "Raw Title Line")
 
     def test_missing_instructor_is_none(self):
-        content = "Course Title: No Instructor\nCourse Link: https://x.test\n\nLesson 0: Only\nSome text here.\n"
+        content = (
+            "Course Title: No Instructor\nCourse Link: https://x.test\n\n"
+            "Lesson 0: Only\nSome text here.\n"
+        )
         path = self._write("noinst.txt", content)
         course, _ = self.processor.process_course_document(path)
         self.assertIsNone(course.instructor)

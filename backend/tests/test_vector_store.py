@@ -60,7 +60,9 @@ class TestVectorStore(unittest.TestCase):
         }
         results = self.store.search("anything")
 
-        self.content.query.assert_called_once_with(query_texts=["anything"], n_results=5, where=None)
+        self.content.query.assert_called_once_with(
+            query_texts=["anything"], n_results=5, where=None
+        )
         self.assertEqual(results.documents, ["hit"])
         self.catalog.query.assert_not_called()
 
@@ -170,7 +172,9 @@ class TestVectorStore(unittest.TestCase):
         self.catalog.get.return_value = {
             "metadatas": [{
                 "title": "A",
-                "lessons_json": json.dumps([{"lesson_number": 1, "lesson_title": "T", "lesson_link": None}]),
+                "lessons_json": json.dumps(
+                    [{"lesson_number": 1, "lesson_title": "T", "lesson_link": None}]
+                ),
             }]
         }
         meta = self.store.get_all_courses_metadata()

@@ -37,6 +37,7 @@ class TestSessionManager(unittest.TestCase):
             manager.add_exchange(session_id, f"q{i}", f"a{i}")
 
         history = manager.get_conversation_history(session_id)
+        assert history is not None
         self.assertEqual(len(history), 4)
         self.assertEqual(history[0]["content"], "q3")
         self.assertEqual(history[-1]["content"], "a4")

@@ -109,7 +109,9 @@ class TestAIGenerator(unittest.TestCase):
 
         assistant_msg = follow_up["messages"][2]
         self.assertEqual(assistant_msg["tool_calls"][0]["id"], "call_1")
-        self.assertEqual(assistant_msg["tool_calls"][0]["function"]["name"], "search_course_content")
+        self.assertEqual(
+            assistant_msg["tool_calls"][0]["function"]["name"], "search_course_content"
+        )
 
         tool_msg = follow_up["messages"][3]
         self.assertEqual(tool_msg["tool_call_id"], "call_1")
