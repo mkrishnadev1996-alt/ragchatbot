@@ -13,3 +13,12 @@ dependencies = [
     "python-dotenv==1.1.1",
     "openai==3.42.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
