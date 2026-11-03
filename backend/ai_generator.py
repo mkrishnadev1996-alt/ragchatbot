@@ -5,7 +5,7 @@ from openai import OpenAI
 
 
 class AIGenerator:
-    """Handles interactions with an OpenAI-compatible chat API (Groq, Google Gemini, etc.)
+    """Handles interactions with an OpenAI-compatible Responses API (Groq, Google Gemini, etc.)
     for generating responses"""
 
     # Static system prompt to avoid rebuilding on each call
@@ -41,7 +41,11 @@ Provide only the direct answer to what was asked.
         self.model = model
 
         # Pre-build base API parameters
-        self.base_params = {"model": self.model, "temperature": 0, "max_tokens": 800}
+        self.base_params: dict[str, Any] = {
+            "model": self.model,
+            "temperature": 0,
+            "max_output_tokens": 800,
+        }
 
     def generate_response(
         self,
@@ -56,83 +60,88 @@ Provide only the direct answer to what was asked.
         Args:
             query: The user's question or request
             conversation_history: Prior chat messages as role/content dicts, sent as
-                message turns (not folded into the system prompt)
-            tools: Available tools the AI can use (OpenAI function-tool format)
+                input items (not folded into the instructions)
+            tools: Available tools the AI can use (function-tool format; the nested
+                chat-completions shape {"type": "function", "function": {...}} is accepted)
             tool_manager: Manager to execute tools
 
         Returns:
             Generated response as string
         """
-
-        messages: list[dict[str, Any]] = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        input_items: list[Any] = []
         if conversation_history:
-            messages.extend(conversation_history)
-        messages.append({"role": "user", "content": query})
+            input_items.extend(conversation_history)
+        input_items.append({"role": "user", "content": query})
 
         # Prepare API call parameters
-        api_params: dict[str, Any] = {**self.base_params, "messages": messages}
+        api_params: dict[str, Any] = {
+            **self.base_params,
+            "instructions": self.SYSTEM_PROMPT,
+            "input": input_items,
+        }
 
         # Add tools if available
         if tools:
-            api_params["tools"] = tools
+            api_params["tools"] = [self._to_responses_tool(tool) for tool in tools]
             api_params["tool_choice"] = "auto"
 
         # Get response from the model
-        response = self.client.chat.completions.create(**api_params)
-        message = response.choices[0].message
+        response = self.client.responses.create(**api_params)
+
+        function_calls = [item for item in response.output if item.type == "function_call"]
 
         # Handle tool execution if needed
-        if message.tool_calls and tool_manager:
-            return self._handle_tool_execution(message, messages, tool_manager)
+        if function_calls and tool_manager:
+            return self._handle_tool_execution(response, input_items, tool_manager)
 
         # Return direct response
-        return message.content or ""
+        return response.output_text or ""
 
-    def _handle_tool_execution(
-        self, assistant_message, messages: list[dict[str, Any]], tool_manager
-    ):
+    def _handle_tool_execution(self, response, input_items: list[Any], tool_manager):
         """
         Handle execution of tool calls and get follow-up response.
 
         Args:
-            assistant_message: The assistant message containing tool call requests
-            messages: Messages sent in the initial request (system + user)
+            response: The response containing function call requests
+            input_items: Input items sent in the initial request (history + user query)
             tool_manager: Manager to execute tools
 
         Returns:
             Final response text after tool execution
         """
-        # Start with existing messages
-        messages = messages.copy()
+        # Carry over the model's output items (function calls, plus any reasoning items
+        # the provider requires to be returned with them)
+        follow_up_input = [*input_items, *response.output]
 
-        # Add AI's tool call request
-        messages.append(
-            {
-                "role": "assistant",
-                "content": assistant_message.content,
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
-                    for tool_call in assistant_message.tool_calls
-                ],
-            }
-        )
-
-        # Execute all tool calls and append each result as its own tool message
-        for tool_call in assistant_message.tool_calls:
-            arguments = json.loads(tool_call.function.arguments or "{}")
-            tool_result = tool_manager.execute_tool(tool_call.function.name, **arguments)
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": tool_result})
+        # Execute all tool calls and append each result as its own function_call_output
+        for item in response.output:
+            if item.type != "function_call":
+                continue
+            arguments = json.loads(item.arguments or "{}")
+            tool_result = tool_manager.execute_tool(item.name, **arguments)
+            follow_up_input.append(
+                {"type": "function_call_output", "call_id": item.call_id, "output": tool_result}
+            )
 
         # Prepare final API call without tools
-        final_params: dict[str, Any] = {**self.base_params, "messages": messages}
+        final_params: dict[str, Any] = {
+            **self.base_params,
+            "instructions": self.SYSTEM_PROMPT,
+            "input": follow_up_input,
+        }
 
         # Get final response
-        final_response = self.client.chat.completions.create(**final_params)
-        return final_response.choices[0].message.content or ""
+        final_response = self.client.responses.create(**final_params)
+        return final_response.output_text or ""
+
+    @staticmethod
+    def _to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
+        """Convert a nested function-tool definition to the flat Responses API shape"""
+        if "function" not in tool:
+            return tool
+        function = tool["function"]
+        flat: dict[str, Any] = {"type": "function", "name": function["name"]}
+        for key in ("description", "parameters", "strict"):
+            if key in function:
+                flat[key] = function[key]
+        return flat
