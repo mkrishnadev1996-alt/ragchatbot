@@ -24,7 +24,6 @@ def make_config():
 
 
 class TestRAGSystem(unittest.TestCase):
-
     def setUp(self):
         # Replace the heavy components so no ChromaDB, embedding model or LLM is touched.
         vs_patcher = patch("rag_system.VectorStore")
@@ -82,17 +81,23 @@ class TestRAGSystem(unittest.TestCase):
         self.rag.query("follow up", session_id)
 
         kwargs = self.ai.generate_response.call_args.kwargs
-        self.assertEqual(kwargs["conversation_history"], [
-            {"role": "user", "content": "earlier"},
-            {"role": "assistant", "content": "earlier answer"},
-        ])
+        self.assertEqual(
+            kwargs["conversation_history"],
+            [
+                {"role": "user", "content": "earlier"},
+                {"role": "assistant", "content": "earlier answer"},
+            ],
+        )
 
         history = self.rag.session_manager.get_conversation_history(session_id)
         assert history is not None
-        self.assertEqual(history[-2:], [
-            {"role": "user", "content": "follow up"},
-            {"role": "assistant", "content": "new answer"},
-        ])
+        self.assertEqual(
+            history[-2:],
+            [
+                {"role": "user", "content": "follow up"},
+                {"role": "assistant", "content": "new answer"},
+            ],
+        )
 
     def test_query_passes_tool_definitions_and_manager(self):
         self.ai.generate_response.return_value = "ok"
@@ -155,8 +160,9 @@ class TestRAGSystem(unittest.TestCase):
     def test_get_course_analytics(self):
         self.vector_store.get_course_count.return_value = 2
         self.vector_store.get_existing_course_titles.return_value = ["A", "B"]
-        self.assertEqual(self.rag.get_course_analytics(),
-                         {"total_courses": 2, "course_titles": ["A", "B"]})
+        self.assertEqual(
+            self.rag.get_course_analytics(), {"total_courses": 2, "course_titles": ["A", "B"]}
+        )
 
 
 if __name__ == "__main__":

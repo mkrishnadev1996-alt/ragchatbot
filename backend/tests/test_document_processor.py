@@ -25,7 +25,6 @@ This course has no lesson markers. It is one block of text.
 
 
 class TestChunkText(unittest.TestCase):
-
     def test_short_text_is_single_chunk(self):
         processor = DocumentProcessor(chunk_size=800, chunk_overlap=0)
         chunks = processor.chunk_text("One sentence. Two sentence.")
@@ -71,7 +70,6 @@ class TestChunkText(unittest.TestCase):
 
 
 class TestProcessCourseDocument(unittest.TestCase):
-
     def setUp(self):
         self.processor = DocumentProcessor(chunk_size=800, chunk_overlap=100)
         self.tmpdir = tempfile.TemporaryDirectory()
