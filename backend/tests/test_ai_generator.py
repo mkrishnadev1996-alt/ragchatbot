@@ -18,7 +18,6 @@ def make_tool_call(call_id, name, arguments):
 
 
 class TestAIGenerator(unittest.TestCase):
-
     def setUp(self):
         openai_patcher = patch("ai_generator.OpenAI")
         openai_cls = openai_patcher.start()
@@ -94,7 +93,8 @@ class TestAIGenerator(unittest.TestCase):
         tool_manager.execute_tool.return_value = "SEARCH RESULT"
 
         result = self.generator.generate_response(
-            "q", tools=[{"type": "function", "function": {"name": "search_course_content"}}],
+            "q",
+            tools=[{"type": "function", "function": {"name": "search_course_content"}}],
             tool_manager=tool_manager,
         )
 
@@ -134,8 +134,9 @@ class TestAIGenerator(unittest.TestCase):
         self.assertEqual(tool_manager.execute_tool.call_count, 2)
         messages = self.create.call_args_list[1].kwargs["messages"]
         tool_msgs = [m for m in messages if m["role"] == "tool"]
-        self.assertEqual([(m["tool_call_id"], m["content"]) for m in tool_msgs],
-                         [("a", "R1"), ("b", "R2")])
+        self.assertEqual(
+            [(m["tool_call_id"], m["content"]) for m in tool_msgs], [("a", "R1"), ("b", "R2")]
+        )
 
     def test_empty_tool_arguments_are_treated_as_no_args(self):
         self.create.side_effect = [

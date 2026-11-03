@@ -7,13 +7,14 @@ from vector_store import SearchResults, VectorStore
 
 
 class TestSearchResults(unittest.TestCase):
-
     def test_from_chroma_unpacks_first_query_row(self):
-        results = SearchResults.from_chroma({
-            "documents": [["doc1", "doc2"]],
-            "metadatas": [[{"course_title": "A"}, {"course_title": "B"}]],
-            "distances": [[0.1, 0.2]],
-        })
+        results = SearchResults.from_chroma(
+            {
+                "documents": [["doc1", "doc2"]],
+                "metadatas": [[{"course_title": "A"}, {"course_title": "B"}]],
+                "distances": [[0.1, 0.2]],
+            }
+        )
         self.assertEqual(results.documents, ["doc1", "doc2"])
         self.assertEqual(results.metadata, [{"course_title": "A"}, {"course_title": "B"}])
         self.assertEqual(results.distances, [0.1, 0.2])
@@ -31,7 +32,6 @@ class TestSearchResults(unittest.TestCase):
 
 
 class TestVectorStore(unittest.TestCase):
-
     def setUp(self):
         # Patch the whole chromadb module so no database is created and no
         # embedding model is downloaded.
@@ -42,8 +42,8 @@ class TestVectorStore(unittest.TestCase):
         self.client = self.chromadb.PersistentClient.return_value
         self.catalog = MagicMock(name="course_catalog")
         self.content = MagicMock(name="course_content")
-        self.client.get_or_create_collection.side_effect = (
-            lambda name, **kwargs: self.catalog if name == "course_catalog" else self.content
+        self.client.get_or_create_collection.side_effect = lambda name, **kwargs: (
+            self.catalog if name == "course_catalog" else self.content
         )
 
         self.store = VectorStore("unused-path", "fake-model", max_results=5)
@@ -149,8 +149,10 @@ class TestVectorStore(unittest.TestCase):
         kwargs = self.content.add.call_args.kwargs
         self.assertEqual(kwargs["documents"], ["one", "two"])
         self.assertEqual(kwargs["ids"], ["My_Course_0", "My_Course_1"])
-        self.assertEqual(kwargs["metadatas"][0],
-                         {"course_title": "My Course", "lesson_number": 1, "chunk_index": 0})
+        self.assertEqual(
+            kwargs["metadatas"][0],
+            {"course_title": "My Course", "lesson_number": 1, "chunk_index": 0},
+        )
 
     def test_add_empty_chunks_is_noop(self):
         self.store.add_course_content([])
@@ -170,12 +172,14 @@ class TestVectorStore(unittest.TestCase):
 
     def test_get_all_courses_metadata_parses_lessons_json(self):
         self.catalog.get.return_value = {
-            "metadatas": [{
-                "title": "A",
-                "lessons_json": json.dumps(
-                    [{"lesson_number": 1, "lesson_title": "T", "lesson_link": None}]
-                ),
-            }]
+            "metadatas": [
+                {
+                    "title": "A",
+                    "lessons_json": json.dumps(
+                        [{"lesson_number": 1, "lesson_title": "T", "lesson_link": None}]
+                    ),
+                }
+            ]
         }
         meta = self.store.get_all_courses_metadata()
         self.assertEqual(meta[0]["lessons"][0]["lesson_number"], 1)
@@ -192,12 +196,16 @@ class TestVectorStore(unittest.TestCase):
 
     def test_get_lesson_link_finds_matching_lesson(self):
         self.catalog.get.return_value = {
-            "metadatas": [{
-                "lessons_json": json.dumps([
-                    {"lesson_number": 1, "lesson_link": "https://a.test/1"},
-                    {"lesson_number": 2, "lesson_link": "https://a.test/2"},
-                ])
-            }]
+            "metadatas": [
+                {
+                    "lessons_json": json.dumps(
+                        [
+                            {"lesson_number": 1, "lesson_link": "https://a.test/1"},
+                            {"lesson_number": 2, "lesson_link": "https://a.test/2"},
+                        ]
+                    )
+                }
+            ]
         }
         self.assertEqual(self.store.get_lesson_link("A", 2), "https://a.test/2")
 

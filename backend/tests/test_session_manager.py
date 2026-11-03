@@ -4,7 +4,6 @@ from session_manager import SessionManager
 
 
 class TestSessionManager(unittest.TestCase):
-
     def test_create_session_returns_unique_ids(self):
         manager = SessionManager(max_history=2)
         first = manager.create_session()
@@ -24,10 +23,13 @@ class TestSessionManager(unittest.TestCase):
         manager.add_exchange(session_id, "What is RAG?", "Retrieval-augmented generation.")
 
         history = manager.get_conversation_history(session_id)
-        self.assertEqual(history, [
-            {"role": "user", "content": "What is RAG?"},
-            {"role": "assistant", "content": "Retrieval-augmented generation."},
-        ])
+        self.assertEqual(
+            history,
+            [
+                {"role": "user", "content": "What is RAG?"},
+                {"role": "assistant", "content": "Retrieval-augmented generation."},
+            ],
+        )
 
     def test_history_is_trimmed_to_max_history_exchanges(self):
         # max_history=2 keeps the last 2 * 2 = 4 messages
@@ -45,8 +47,9 @@ class TestSessionManager(unittest.TestCase):
     def test_add_message_to_unknown_session_creates_it(self):
         manager = SessionManager(max_history=2)
         manager.add_message("custom", "user", "hi")
-        self.assertEqual(manager.get_conversation_history("custom"),
-                         [{"role": "user", "content": "hi"}])
+        self.assertEqual(
+            manager.get_conversation_history("custom"), [{"role": "user", "content": "hi"}]
+        )
 
     def test_unknown_or_empty_session_id_returns_none(self):
         manager = SessionManager(max_history=2)

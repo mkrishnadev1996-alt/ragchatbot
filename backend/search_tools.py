@@ -41,14 +41,17 @@ class CourseSearchTool(Tool):
                             "type": "string",
                             "description": "What to search for in the course content",
                         },
+                        # Optional params are nullable: models sometimes send explicit nulls for
+                        # them, and providers (e.g. Groq) reject the call if the schema says
+                        # the value must be a string/integer. execute() treats None as "unset".
                         "course_name": {
-                            "type": "string",
+                            "type": ["string", "null"],
                             "description": (
                                 "Course title (partial matches work, e.g. 'MCP', 'Introduction')"
                             ),
                         },
                         "lesson_number": {
-                            "type": "integer",
+                            "type": ["integer", "null"],
                             "description": "Specific lesson number to search within (e.g. 1, 2, 3)",
                         },
                     },

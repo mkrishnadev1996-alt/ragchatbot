@@ -26,7 +26,6 @@ class FakeTool(Tool):
 
 
 class TestCourseSearchTool(unittest.TestCase):
-
     def setUp(self):
         self.store = MagicMock()
         self.tool = CourseSearchTool(self.store)
@@ -36,6 +35,20 @@ class TestCourseSearchTool(unittest.TestCase):
         self.assertEqual(definition["type"], "function")
         self.assertEqual(definition["function"]["name"], "search_course_content")
         self.assertEqual(definition["function"]["parameters"]["required"], ["query"])
+
+    def test_optional_params_accept_null(self):
+        # Models send explicit nulls for unused optional params; the schema must allow them
+        # or the provider rejects the whole tool call (surfaced to users as a 500).
+        props = self.tool.get_tool_definition()["function"]["parameters"]["properties"]
+        self.assertIn("null", props["course_name"]["type"])
+        self.assertIn("null", props["lesson_number"]["type"])
+
+    def test_execute_treats_explicit_none_as_unset(self):
+        self.store.search.return_value = make_results([], [])
+        self.tool.execute(query="embeddings", course_name=None, lesson_number=None)
+        self.store.search.assert_called_once_with(
+            query="embeddings", course_name=None, lesson_number=None
+        )
 
     def test_execute_passes_filters_to_store(self):
         self.store.search.return_value = make_results([], [])
@@ -95,7 +108,6 @@ class TestCourseSearchTool(unittest.TestCase):
 
 
 class TestToolManager(unittest.TestCase):
-
     def test_register_and_list_definitions(self):
         manager = ToolManager()
         manager.register_tool(FakeTool("alpha"))
