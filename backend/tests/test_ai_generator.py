@@ -1,8 +1,18 @@
 import unittest
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
-from ai_generator import AIGenerator
+import openai
+from ai_generator import AIGenerator, LLMRateLimitError
+
+
+def make_rate_limit_error(retry_after=None):
+    """Build the SDK's RateLimitError as the Responses API would raise it on HTTP 429"""
+    headers = {"retry-after": retry_after} if retry_after is not None else {}
+    response = SimpleNamespace(status_code=429, headers=headers, request=None)
+    # The fake only needs status_code/headers/request, so cast it to the SDK's Response type
+    return openai.RateLimitError("rate limited", response=cast(Any, response), body=None)
 
 
 def make_response(text=None, function_calls=None):
@@ -33,12 +43,12 @@ class TestAIGenerator(unittest.TestCase):
     def test_client_is_built_from_arguments(self):
         with patch("ai_generator.OpenAI") as openai_cls:
             AIGenerator(api_key="k", base_url="http://u", model="m")
-            openai_cls.assert_called_once_with(api_key="k", base_url="http://u")
+            openai_cls.assert_called_once_with(api_key="k", base_url="http://u", max_retries=3)
 
     def test_base_params_use_model_and_limits(self):
         self.assertEqual(self.generator.base_params["model"], "test-model")
         self.assertEqual(self.generator.base_params["temperature"], 0)
-        self.assertEqual(self.generator.base_params["max_output_tokens"], 800)
+        self.assertEqual(self.generator.base_params["max_output_tokens"], 1600)
 
     def test_direct_answer_without_tools(self):
         self.create.return_value = make_response(text="Hello there")
@@ -185,6 +195,51 @@ class TestAIGenerator(unittest.TestCase):
         result = self.generator.generate_response("q", tools=[{}], tool_manager=None)
         self.assertEqual(result, "partial")
         self.assertEqual(self.create.call_count, 1)
+
+    def test_rate_limit_becomes_llm_rate_limit_error_with_retry_after(self):
+        self.create.side_effect = make_rate_limit_error(retry_after="7")
+
+        with self.assertRaises(LLMRateLimitError) as ctx:
+            self.generator.generate_response("q")
+
+        self.assertEqual(ctx.exception.retry_after, 7.0)
+        self.assertIn("too many requests", str(ctx.exception))
+
+    def test_rate_limit_without_retry_after_header_has_no_delay(self):
+        self.create.side_effect = make_rate_limit_error()
+
+        with self.assertRaises(LLMRateLimitError) as ctx:
+            self.generator.generate_response("q")
+
+        self.assertIsNone(ctx.exception.retry_after)
+
+    def test_unparseable_retry_after_header_is_ignored(self):
+        self.create.side_effect = make_rate_limit_error(retry_after="Wed, 21 Oct 2026 07:28:00 GMT")
+
+        with self.assertRaises(LLMRateLimitError) as ctx:
+            self.generator.generate_response("q")
+
+        self.assertIsNone(ctx.exception.retry_after)
+
+    def test_rate_limit_on_tool_follow_up_call_is_also_translated(self):
+        function_call = make_function_call("c", "search_course_content", "{}")
+        self.create.side_effect = [
+            make_response(function_calls=[function_call]),
+            make_rate_limit_error(retry_after="3"),
+        ]
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.return_value = "r"
+
+        with self.assertRaises(LLMRateLimitError) as ctx:
+            self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
+
+        self.assertEqual(ctx.exception.retry_after, 3.0)
+
+    def test_other_errors_are_not_translated(self):
+        self.create.side_effect = RuntimeError("network down")
+
+        with self.assertRaises(RuntimeError):
+            self.generator.generate_response("q")
 
 
 if __name__ == "__main__":

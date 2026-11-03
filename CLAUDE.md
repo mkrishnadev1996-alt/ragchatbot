@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Python 3.13+, dependencies managed with `uv`. No linter or formatter is configured.
+Python 3.13+, dependencies managed with `uv`. Lint and format with ruff (configured in `pyproject.toml`, line length 100): `uv run ruff check .` and `uv run ruff format .`.
 
 ```bash
 uv sync                                  # install dependencies
@@ -23,7 +23,7 @@ uv run pytest                            # run unit tests (backend/tests; no net
 - **Documents are deduplicated by course title, not by content.** `RAGSystem.add_course_folder` skips any file whose parsed title already exists in the `course_catalog` collection. Editing a course file and restarting will NOT re-index it. To rebuild, delete `backend/chroma_db/` or call `add_course_folder(..., clear_existing=True)`.
 - **Course file format is parsed positionally.** `DocumentProcessor.process_course_document` expects line 1 `Course Title: ...`, line 2 `Course Link: ...`, line 3 `Course Instructor: ...`, then `Lesson N: Title` markers, optionally followed by a `Lesson Link: ...` line. Files without lesson markers fall back to a single unnumbered chunk stream.
 - Supported extensions for folder ingestion: `.pdf`, `.docx`, `.txt`. Note that `DocumentProcessor.read_file` only reads text, so PDF/DOCX content will not be parsed correctly with the current code.
-- The LLM provider is any OpenAI-compatible endpoint, set via `LLM_BASE_URL` / `LLM_MODEL` (defaults in `backend/config.py`: Groq). API limits (`max_tokens=800`, `temperature=0`) are in `AIGenerator.base_params`.
+- The LLM provider is any OpenAI-compatible endpoint, set via `LLM_BASE_URL` / `LLM_MODEL` (defaults in `backend/config.py`: Groq). API limits (`max_output_tokens=1600`, `temperature=0`) are in `AIGenerator.base_params`.
 
 ## Architecture
 
