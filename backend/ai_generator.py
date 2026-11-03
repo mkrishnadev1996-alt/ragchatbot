@@ -1,7 +1,21 @@
 import json
 from typing import Any
 
+import openai
 from openai import OpenAI
+
+
+class LLMRateLimitError(Exception):
+    """The LLM provider kept rejecting requests with HTTP 429 after the SDK's own retries"""
+
+    USER_MESSAGE = (
+        "The AI service is receiving too many requests right now. "
+        "Please wait a moment and try again."
+    )
+
+    def __init__(self, retry_after: float | None = None):
+        self.retry_after = retry_after
+        super().__init__(self.USER_MESSAGE)
 
 
 class AIGenerator:
@@ -37,14 +51,15 @@ Provide only the direct answer to what was asked.
 """
 
     def __init__(self, api_key: str, base_url: str, model: str):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # The SDK retries 429s and 5xx with backoff; default is 2, raised to 3 here
+        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=3)
         self.model = model
 
         # Pre-build base API parameters
         self.base_params: dict[str, Any] = {
             "model": self.model,
             "temperature": 0,
-            "max_output_tokens": 800,
+            "max_output_tokens": 1600,
         }
 
     def generate_response(
@@ -86,7 +101,7 @@ Provide only the direct answer to what was asked.
             api_params["tool_choice"] = "auto"
 
         # Get response from the model
-        response = self.client.responses.create(**api_params)
+        response = self._create_response(**api_params)
 
         function_calls = [item for item in response.output if item.type == "function_call"]
 
@@ -131,8 +146,25 @@ Provide only the direct answer to what was asked.
         }
 
         # Get final response
-        final_response = self.client.responses.create(**final_params)
+        final_response = self._create_response(**final_params)
         return final_response.output_text or ""
+
+    def _create_response(self, **params):
+        """Call the Responses API, translating provider rate limits into LLMRateLimitError"""
+        try:
+            return self.client.responses.create(**params)
+        except openai.RateLimitError as e:
+            raise LLMRateLimitError(self._retry_after_seconds(e)) from e
+
+    @staticmethod
+    def _retry_after_seconds(error: openai.APIStatusError) -> float | None:
+        """Read the Retry-After header (seconds) from a rate-limit error, if sent"""
+        headers = getattr(getattr(error, "response", None), "headers", None) or {}
+        value = headers.get("retry-after")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:

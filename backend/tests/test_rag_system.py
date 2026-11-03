@@ -73,6 +73,20 @@ class TestRAGSystem(unittest.TestCase):
         _, sources = self.rag.query("q2")
         self.assertEqual(sources, [])
 
+    def test_failed_llm_call_clears_sources_and_skips_history(self):
+        def failing_generate(**kwargs):
+            self.rag.search_tool.last_sources = ["Stale"]
+            raise RuntimeError("provider down")
+
+        self.ai.generate_response.side_effect = failing_generate
+        session_id = self.rag.session_manager.create_session()
+
+        with self.assertRaises(RuntimeError):
+            self.rag.query("q1", session_id)
+
+        self.assertEqual(self.rag.tool_manager.get_last_sources(), [])
+        self.assertEqual(self.rag.session_manager.get_conversation_history(session_id), None)
+
     def test_query_with_session_passes_history_and_records_exchange(self):
         session_id = self.rag.session_manager.create_session()
         self.rag.session_manager.add_exchange(session_id, "earlier", "earlier answer")

@@ -71,7 +71,18 @@ async function sendMessage() {
             })
         });
 
-        if (!response.ok) throw new Error('Query failed');
+        if (!response.ok) {
+            let message = 'Query failed';
+            // Only surface the server's message for rate limits; other errors stay generic
+            if (response.status === 429) {
+                message = 'The AI service is busy. Please try again in a moment.';
+                try {
+                    const err = await response.json();
+                    if (err.detail) message = err.detail;
+                } catch (_) { /* keep default rate-limit message */ }
+            }
+            throw new Error(message);
+        }
 
         const data = await response.json();
         

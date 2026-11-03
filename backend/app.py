@@ -2,8 +2,10 @@ import warnings
 
 warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.*")
 
+import math
 import os
 
+from ai_generator import LLMRateLimitError
 from config import config
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +74,11 @@ async def query_documents(request: QueryRequest):
         answer, sources = rag_system.query(request.query, session_id)
 
         return QueryResponse(answer=answer, sources=sources, session_id=session_id)
+    except LLMRateLimitError as e:
+        headers = None
+        if e.retry_after is not None:
+            headers = {"Retry-After": str(max(1, math.ceil(e.retry_after)))}
+        raise HTTPException(status_code=429, detail=str(e), headers=headers) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
