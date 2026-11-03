@@ -2,6 +2,7 @@ import warnings
 
 warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.*")
 
+import logging
 import math
 import os
 
@@ -14,6 +15,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rag_system import RAGSystem
+from utils.logging_config import setup_logging
+
+setup_logging(config.LOG_LEVEL, config.LOG_FILE)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="Course Materials RAG System", root_path="")
@@ -70,16 +75,21 @@ async def query_documents(request: QueryRequest):
         if not session_id:
             session_id = rag_system.session_manager.create_session()
 
+        logger.info("Query received (session=%s, %d chars)", session_id, len(request.query))
+        logger.debug("Query text (session=%s): %s", session_id, request.query)
+
         # Process query using RAG system
         answer, sources = rag_system.query(request.query, session_id)
 
         return QueryResponse(answer=answer, sources=sources, session_id=session_id)
     except LLMRateLimitError as e:
+        logger.warning("Returning 429 to client: LLM rate limit (retry_after=%s)", e.retry_after)
         headers = None
         if e.retry_after is not None:
             headers = {"Retry-After": str(max(1, math.ceil(e.retry_after)))}
         raise HTTPException(status_code=429, detail=str(e), headers=headers) from e
     except Exception as e:
+        logger.exception("Query failed; returning 500")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -92,6 +102,7 @@ async def get_course_stats():
             total_courses=analytics["total_courses"], course_titles=analytics["course_titles"]
         )
     except Exception as e:
+        logger.exception("Failed to load course stats; returning 500")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -100,12 +111,14 @@ async def startup_event():
     """Load initial documents on startup"""
     docs_path = "../docs"
     if os.path.exists(docs_path):
-        print("Loading initial documents...")
+        logger.info("Loading initial documents from %s", docs_path)
         try:
             courses, chunks = rag_system.add_course_folder(docs_path, clear_existing=False)
-            print(f"Loaded {courses} courses with {chunks} chunks")
-        except Exception as e:
-            print(f"Error loading documents: {e}")
+            logger.info("Loaded %d courses with %d chunks", courses, chunks)
+        except Exception:
+            logger.exception("Error loading initial documents")
+    else:
+        logger.warning("Docs folder %s not found; skipping initial load", docs_path)
 
 
 # Custom static file handler with no-cache headers for development

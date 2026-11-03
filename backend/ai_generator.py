@@ -1,8 +1,12 @@
 import json
+import logging
 from typing import Any
 
 import openai
 from openai import OpenAI
+from utils.http_utils import parse_retry_after
+
+logger = logging.getLogger(__name__)
 
 
 class LLMRateLimitError(Exception):
@@ -133,7 +137,10 @@ Provide only the direct answer to what was asked.
             if item.type != "function_call":
                 continue
             arguments = json.loads(item.arguments or "{}")
+            logger.info("Executing tool %s", item.name)
+            logger.debug("Tool %s arguments: %s", item.name, arguments)
             tool_result = tool_manager.execute_tool(item.name, **arguments)
+            logger.debug("Tool %s returned %d chars", item.name, len(tool_result))
             follow_up_input.append(
                 {"type": "function_call_output", "call_id": item.call_id, "output": tool_result}
             )
@@ -151,20 +158,19 @@ Provide only the direct answer to what was asked.
 
     def _create_response(self, **params):
         """Call the Responses API, translating provider rate limits into LLMRateLimitError"""
+        logger.debug(
+            "LLM request: model=%s tools=%d", params.get("model"), len(params.get("tools", []))
+        )
         try:
             return self.client.responses.create(**params)
         except openai.RateLimitError as e:
-            raise LLMRateLimitError(self._retry_after_seconds(e)) from e
-
-    @staticmethod
-    def _retry_after_seconds(error: openai.APIStatusError) -> float | None:
-        """Read the Retry-After header (seconds) from a rate-limit error, if sent"""
-        headers = getattr(getattr(error, "response", None), "headers", None) or {}
-        value = headers.get("retry-after")
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
+            headers = getattr(getattr(e, "response", None), "headers", None)
+            retry_after = parse_retry_after(headers)
+            logger.warning("LLM rate limit hit after SDK retries (retry_after=%s)", retry_after)
+            raise LLMRateLimitError(retry_after) from e
+        except openai.APIError:
+            logger.exception("LLM API request failed (model=%s)", params.get("model"))
+            raise
 
     @staticmethod
     def _to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
