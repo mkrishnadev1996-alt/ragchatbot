@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Python 3.13+, dependencies managed with `uv`. There is no test suite, linter, or formatter configured.
+Python 3.13+, dependencies managed with `uv`. No linter or formatter is configured.
 
 ```bash
 uv sync                                  # install dependencies
 ./run.sh                                 # start server (cd backend && uvicorn app:app --reload --port 8000)
 cd backend && uv run uvicorn app:app --reload --port 8000   # equivalent manual start
+uv run pytest                            # run unit tests (backend/tests; no network/LLM/model download)
 ```
 
 - Web UI: http://localhost:8000 · API docs: http://localhost:8000/docs
