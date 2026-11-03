@@ -70,7 +70,8 @@ class TestCourseSearchTool(unittest.TestCase):
         result = self.tool.execute(query="rag")
         self.assertEqual(
             result,
-            "[Intro to AI - Lesson 1]\nChunk about RAG.\n\n[Intro to AI - Lesson 2]\nChunk about tools.",
+            "[Intro to AI - Lesson 1]\nChunk about RAG.\n\n"
+            "[Intro to AI - Lesson 2]\nChunk about tools.",
         )
 
     def test_result_without_lesson_number_has_course_only_header(self):
