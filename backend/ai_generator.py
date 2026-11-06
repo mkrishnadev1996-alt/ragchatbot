@@ -1,9 +1,9 @@
-import json
 import logging
 from typing import Any
 
 import openai
-from openai import OpenAI
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
 from utils.http_utils import parse_retry_after
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ class LLMRateLimitError(Exception):
 
 
 class AIGenerator:
-    """Handles interactions with an OpenAI-compatible Responses API (Groq, Google Gemini, etc.)
-    for generating responses"""
+    """Handles interactions with an OpenAI-compatible chat endpoint (Groq, Google Gemini, etc.)
+    through LangChain's ChatOpenAI for generating responses"""
 
     # Static system prompt to avoid rebuilding on each call
     SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational
@@ -55,16 +55,16 @@ Provide only the direct answer to what was asked.
 """
 
     def __init__(self, api_key: str, base_url: str, model: str):
-        # The SDK retries 429s and 5xx with backoff; default is 2, raised to 3 here
-        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=3)
+        # max_retries is passed to the OpenAI SDK, which retries 429s and 5xx with backoff
+        self.llm = ChatOpenAI(
+            model=model,
+            api_key=api_key,  # type: ignore[arg-type]
+            base_url=base_url,
+            temperature=0,
+            max_tokens=1600,  # type: ignore[call-arg]
+            max_retries=3,
+        )
         self.model = model
-
-        # Pre-build base API parameters
-        self.base_params: dict[str, Any] = {
-            "model": self.model,
-            "temperature": 0,
-            "max_output_tokens": 1600,
-        }
 
     def generate_response(
         self,
@@ -79,107 +79,72 @@ Provide only the direct answer to what was asked.
         Args:
             query: The user's question or request
             conversation_history: Prior chat messages as role/content dicts, sent as
-                input items (not folded into the instructions)
-            tools: Available tools the AI can use (function-tool format; the nested
-                chat-completions shape {"type": "function", "function": {...}} is accepted)
+                messages between the system prompt and the query
+            tools: Available tools the AI can use (nested function-tool format
+                {"type": "function", "function": {...}}, as accepted by bind_tools)
             tool_manager: Manager to execute tools
 
         Returns:
             Generated response as string
         """
-        input_items: list[Any] = []
-        if conversation_history:
-            input_items.extend(conversation_history)
-        input_items.append({"role": "user", "content": query})
+        messages: list[BaseMessage] = [SystemMessage(content=self.SYSTEM_PROMPT)]
+        for item in conversation_history or []:
+            if item["role"] == "assistant":
+                messages.append(AIMessage(content=item["content"]))
+            else:
+                messages.append(HumanMessage(content=item["content"]))
+        messages.append(HumanMessage(content=query))
 
-        # Prepare API call parameters
-        api_params: dict[str, Any] = {
-            **self.base_params,
-            "instructions": self.SYSTEM_PROMPT,
-            "input": input_items,
-        }
-
-        # Add tools if available
-        if tools:
-            api_params["tools"] = [self._to_responses_tool(tool) for tool in tools]
-            api_params["tool_choice"] = "auto"
-
-        # Get response from the model
-        response = self._create_response(**api_params)
-
-        function_calls = [item for item in response.output if item.type == "function_call"]
+        # Bind tools if available; otherwise call the plain model
+        runnable = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+        response = self._invoke(runnable, messages)
 
         # Handle tool execution if needed
-        if function_calls and tool_manager:
-            return self._handle_tool_execution(response, input_items, tool_manager)
+        if response.tool_calls and tool_manager:
+            return self._handle_tool_execution(response, messages, tool_manager)
 
         # Return direct response
-        return response.output_text or ""
+        return response.text
 
-    def _handle_tool_execution(self, response, input_items: list[Any], tool_manager):
+    def _handle_tool_execution(
+        self, response: AIMessage, messages: list[BaseMessage], tool_manager
+    ):
         """
         Handle execution of tool calls and get follow-up response.
 
         Args:
-            response: The response containing function call requests
-            input_items: Input items sent in the initial request (history + user query)
+            response: The AI message containing tool call requests
+            messages: Messages sent in the initial request (system + history + user query)
             tool_manager: Manager to execute tools
 
         Returns:
             Final response text after tool execution
         """
-        # Carry over the model's output items (function calls, plus any reasoning items
-        # the provider requires to be returned with them)
-        follow_up_input = [*input_items, *response.output]
+        follow_up: list[BaseMessage] = [*messages, response]
 
-        # Execute all tool calls and append each result as its own function_call_output
-        for item in response.output:
-            if item.type != "function_call":
-                continue
-            arguments = json.loads(item.arguments or "{}")
-            logger.info("Executing tool %s", item.name)
-            logger.debug("Tool %s arguments: %s", item.name, arguments)
-            tool_result = tool_manager.execute_tool(item.name, **arguments)
-            logger.debug("Tool %s returned %d chars", item.name, len(tool_result))
-            follow_up_input.append(
-                {"type": "function_call_output", "call_id": item.call_id, "output": tool_result}
-            )
+        # Execute all tool calls and append each result as its own ToolMessage
+        for tool_call in response.tool_calls:
+            name, arguments = tool_call["name"], tool_call["args"]
+            logger.info("Executing tool %s", name)
+            logger.debug("Tool %s arguments: %s", name, arguments)
+            tool_result = tool_manager.execute_tool(name, **arguments)
+            logger.debug("Tool %s returned %d chars", name, len(tool_result))
+            follow_up.append(ToolMessage(content=tool_result, tool_call_id=tool_call["id"] or ""))
 
-        # Prepare final API call without tools
-        final_params: dict[str, Any] = {
-            **self.base_params,
-            "instructions": self.SYSTEM_PROMPT,
-            "input": follow_up_input,
-        }
+        # Final call on the unbound model: no tools, so this is the last round
+        final_response = self._invoke(self.llm, follow_up)
+        return final_response.text
 
-        # Get final response
-        final_response = self._create_response(**final_params)
-        return final_response.output_text or ""
-
-    def _create_response(self, **params):
-        """Call the Responses API, translating provider rate limits into LLMRateLimitError"""
-        logger.debug(
-            "LLM request: model=%s tools=%d", params.get("model"), len(params.get("tools", []))
-        )
+    def _invoke(self, runnable: Any, messages: list[BaseMessage]) -> AIMessage:
+        """Invoke the model, translating provider rate limits into LLMRateLimitError"""
+        logger.debug("LLM request: model=%s messages=%d", self.model, len(messages))
         try:
-            return self.client.responses.create(**params)
+            return runnable.invoke(messages)
         except openai.RateLimitError as e:
             headers = getattr(getattr(e, "response", None), "headers", None)
             retry_after = parse_retry_after(headers)
             logger.warning("LLM rate limit hit after SDK retries (retry_after=%s)", retry_after)
             raise LLMRateLimitError(retry_after) from e
         except openai.APIError:
-            logger.exception("LLM API request failed (model=%s)", params.get("model"))
+            logger.exception("LLM API request failed (model=%s)", self.model)
             raise
-
-    @staticmethod
-    def _to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
-        """Convert a nested function-tool definition to the flat Responses API shape"""
-        if "function" not in tool:
-            return tool
-        function = tool["function"]
-        flat: dict[str, Any] = {"type": "function", "name": function["name"]}
-        for key in ("description", "parameters", "strict"):
-            if key in function:
-                flat[key] = function[key]
-        return flat
