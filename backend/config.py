@@ -16,6 +16,12 @@ class Config:
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
+    # Input guard (decision model on OpenRouter). Disabled when GUARD_API_KEY is empty.
+    GUARD_API_KEY: str = os.getenv("GUARD_API_KEY", "")
+    GUARD_URL: str = os.getenv("GUARD_URL", "https://openrouter.ai/api/alpha/decisions")
+    GUARD_MODEL: str = os.getenv("GUARD_MODEL", "respan/span-01-lite:free")
+    GUARD_THRESHOLD: float = float(os.getenv("GUARD_THRESHOLD", "0.5"))  # block when P >= this
+
     # Embedding model settings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 

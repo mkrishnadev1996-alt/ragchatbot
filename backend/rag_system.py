@@ -3,6 +3,7 @@ import os
 
 from ai_generator import AIGenerator
 from document_processor import DocumentProcessor
+from input_guard import InputGuard
 from models import Course
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import SessionManager
@@ -24,6 +25,16 @@ class RAGSystem:
         )
         self.ai_generator = AIGenerator(config.LLM_API_KEY, config.LLM_BASE_URL, config.LLM_MODEL)
         self.session_manager = SessionManager(config.MAX_HISTORY)
+
+        # Optional pre-LLM safety/scope check; off when no guard API key is configured
+        guard_key = getattr(config, "GUARD_API_KEY", "")
+        self.input_guard = (
+            InputGuard(guard_key, config.GUARD_URL, config.GUARD_MODEL, config.GUARD_THRESHOLD)
+            if guard_key
+            else None
+        )
+        if not self.input_guard:
+            logger.warning("GUARD_API_KEY not set; input guard is disabled")
 
         # Initialize search tools
         self.tool_manager = ToolManager()
@@ -121,6 +132,11 @@ class RAGSystem:
             Tuple of (response, sources list - empty for tool-based approach)
         """
         logger.debug("RAG query (session=%s): %s", session_id, query)
+
+        # Reject harmful, jailbreak or out-of-scope input before any main-LLM call.
+        # Blocked exchanges are not stored in the session history.
+        if self.input_guard and not self.input_guard.is_safe(query):
+            return InputGuard.BLOCKED_MESSAGE, []
 
         # Create prompt for the AI with clear instructions
         prompt = f"""Answer this question about course materials: {query}"""

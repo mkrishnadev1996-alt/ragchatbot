@@ -37,6 +37,39 @@ class TestRAGSystem(unittest.TestCase):
         self.vector_store = self.vector_store_cls.return_value
         self.ai = self.ai_cls.return_value
 
+    def test_guard_disabled_without_key(self):
+        self.assertIsNone(self.rag.input_guard)
+
+    def test_blocked_query_skips_llm_and_history(self):
+        cfg = make_config()
+        cfg.GUARD_API_KEY, cfg.GUARD_URL, cfg.GUARD_MODEL = "k", "http://g.test", "g"
+        cfg.GUARD_THRESHOLD = 0.5
+        with patch("rag_system.InputGuard") as guard_cls:
+            guard_cls.BLOCKED_MESSAGE = "Sorry, we cannot answer that."
+            guard_cls.return_value.is_safe.return_value = False
+            rag = RAGSystem(cfg)
+            session_id = rag.session_manager.create_session()
+
+            answer, sources = rag.query("bad request", session_id)
+
+        self.assertEqual(answer, "Sorry, we cannot answer that.")
+        self.assertEqual(sources, [])
+        self.ai.generate_response.assert_not_called()
+        self.assertEqual(rag.session_manager.get_conversation_history(session_id) or "", "")
+
+    def test_safe_query_continues_to_llm(self):
+        cfg = make_config()
+        cfg.GUARD_API_KEY, cfg.GUARD_URL, cfg.GUARD_MODEL = "k", "http://g.test", "g"
+        cfg.GUARD_THRESHOLD = 0.5
+        with patch("rag_system.InputGuard") as guard_cls:
+            guard_cls.return_value.is_safe.return_value = True
+            rag = RAGSystem(cfg)
+            self.ai.generate_response.return_value = "The answer"
+
+            answer, _ = rag.query("What is MCP?")
+
+        self.assertEqual(answer, "The answer")
+
     def test_wires_search_tool_into_tool_manager(self):
         definitions = self.rag.tool_manager.get_tool_definitions()
         names = [d["function"]["name"] for d in definitions]
