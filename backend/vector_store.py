@@ -1,9 +1,12 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import chromadb
 from chromadb.config import Settings
 from models import Course, CourseChunk
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,6 +106,7 @@ class VectorStore:
             )
             return SearchResults.from_chroma(results)
         except Exception as e:
+            logger.exception("Chroma content search failed (course_title=%s)", course_title)
             return SearchResults.empty(f"Search error: {str(e)}")
 
     def _resolve_course_name(self, course_name: str) -> str | None:
@@ -113,8 +117,8 @@ class VectorStore:
             if results["documents"][0] and results["metadatas"][0]:
                 # Return the title (which is now the ID)
                 return results["metadatas"][0][0]["title"]
-        except Exception as e:
-            print(f"Error resolving course name: {e}")
+        except Exception:
+            logger.exception("Error resolving course name %r", course_name)
 
         return None
 
@@ -190,8 +194,8 @@ class VectorStore:
             # Recreate collections
             self.course_catalog = self._create_collection("course_catalog")
             self.course_content = self._create_collection("course_content")
-        except Exception as e:
-            print(f"Error clearing data: {e}")
+        except Exception:
+            logger.exception("Error clearing course data")
 
     def get_existing_course_titles(self) -> list[str]:
         """Get all existing course titles from the vector store"""
@@ -201,8 +205,8 @@ class VectorStore:
             if results and "ids" in results:
                 return results["ids"]
             return []
-        except Exception as e:
-            print(f"Error getting existing course titles: {e}")
+        except Exception:
+            logger.exception("Error getting existing course titles")
             return []
 
     def get_course_count(self) -> int:
@@ -212,8 +216,8 @@ class VectorStore:
             if results and "ids" in results:
                 return len(results["ids"])
             return 0
-        except Exception as e:
-            print(f"Error getting course count: {e}")
+        except Exception:
+            logger.exception("Error getting course count")
             return 0
 
     def get_all_courses_metadata(self) -> list[dict[str, Any]]:
@@ -233,8 +237,8 @@ class VectorStore:
                     parsed_metadata.append(course_meta)
                 return parsed_metadata
             return []
-        except Exception as e:
-            print(f"Error getting courses metadata: {e}")
+        except Exception:
+            logger.exception("Error getting courses metadata")
             return []
 
     def get_course_link(self, course_title: str) -> str | None:
@@ -246,8 +250,8 @@ class VectorStore:
                 metadata = results["metadatas"][0]
                 return metadata.get("course_link")
             return None
-        except Exception as e:
-            print(f"Error getting course link: {e}")
+        except Exception:
+            logger.exception("Error getting link for course %r", course_title)
             return None
 
     def get_lesson_link(self, course_title: str, lesson_number: int) -> str | None:
@@ -267,6 +271,8 @@ class VectorStore:
                         if lesson.get("lesson_number") == lesson_number:
                             return lesson.get("lesson_link")
             return None
-        except Exception as e:
-            print(f"Error getting lesson link: {e}")
+        except Exception:
+            logger.exception(
+                "Error getting link for course %r lesson %s", course_title, lesson_number
+            )
             return None

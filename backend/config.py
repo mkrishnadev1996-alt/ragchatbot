@@ -28,5 +28,9 @@ class Config:
     # Database paths
     CHROMA_PATH: str = "./chroma_db"  # ChromaDB storage location
 
+    # Logging settings
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
+    LOG_FILE: str | None = os.getenv("LOG_FILE") or None  # Optional rotating log file path
+
 
 config = Config()

@@ -1,3 +1,4 @@
+import logging
 import os
 
 from ai_generator import AIGenerator
@@ -6,6 +7,8 @@ from models import Course
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import SessionManager
 from vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class RAGSystem:
@@ -48,8 +51,8 @@ class RAGSystem:
             self.vector_store.add_course_content(course_chunks)
 
             return course, len(course_chunks)
-        except Exception as e:
-            print(f"Error processing course document {file_path}: {e}")
+        except Exception:
+            logger.exception("Error processing course document %s", file_path)
             return None, 0
 
     def add_course_folder(self, folder_path: str, clear_existing: bool = False) -> tuple[int, int]:
@@ -68,11 +71,11 @@ class RAGSystem:
 
         # Clear existing data if requested
         if clear_existing:
-            print("Clearing existing data for fresh rebuild...")
+            logger.info("Clearing existing data for fresh rebuild")
             self.vector_store.clear_all_data()
 
         if not os.path.exists(folder_path):
-            print(f"Folder {folder_path} does not exist")
+            logger.warning("Folder %s does not exist", folder_path)
             return 0, 0
 
         # Get existing course titles to avoid re-processing
@@ -95,12 +98,14 @@ class RAGSystem:
                         self.vector_store.add_course_content(course_chunks)
                         total_courses += 1
                         total_chunks += len(course_chunks)
-                        print(f"Added new course: {course.title} ({len(course_chunks)} chunks)")
+                        logger.info(
+                            "Added new course: %s (%d chunks)", course.title, len(course_chunks)
+                        )
                         existing_course_titles.add(course.title)
                     elif course:
-                        print(f"Course already exists: {course.title} - skipping")
-                except Exception as e:
-                    print(f"Error processing {file_name}: {e}")
+                        logger.info("Course already exists: %s - skipping", course.title)
+                except Exception:
+                    logger.exception("Error processing %s", file_name)
 
         return total_courses, total_chunks
 
@@ -115,6 +120,8 @@ class RAGSystem:
         Returns:
             Tuple of (response, sources list - empty for tool-based approach)
         """
+        logger.debug("RAG query (session=%s): %s", session_id, query)
+
         # Create prompt for the AI with clear instructions
         prompt = f"""Answer this question about course materials: {query}"""
 

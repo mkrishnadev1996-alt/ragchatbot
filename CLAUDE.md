@@ -11,6 +11,7 @@ uv sync                                  # install dependencies
 ./run.sh                                 # start server (cd backend && uvicorn app:app --reload --port 8000)
 cd backend && uv run uvicorn app:app --reload --port 8000   # equivalent manual start
 uv run pytest                            # run unit tests (backend/tests; no network/LLM/model download)
+uv run mypy backend                      # type check (config in pyproject.toml)
 ```
 
 - Web UI: http://localhost:8000 · API docs: http://localhost:8000/docs
@@ -22,7 +23,8 @@ uv run pytest                            # run unit tests (backend/tests; no net
 - **Working directory matters.** The server must be started from `backend/`. Startup loads course documents from the relative path `../docs`, the static frontend is mounted from `../frontend`, and ChromaDB persists to `./chroma_db` (relative, so it lands in `backend/chroma_db/`). Running uvicorn from the root will silently skip the docs and the frontend.
 - **Documents are deduplicated by course title, not by content.** `RAGSystem.add_course_folder` skips any file whose parsed title already exists in the `course_catalog` collection. Editing a course file and restarting will NOT re-index it. To rebuild, delete `backend/chroma_db/` or call `add_course_folder(..., clear_existing=True)`.
 - **Course file format is parsed positionally.** `DocumentProcessor.process_course_document` expects line 1 `Course Title: ...`, line 2 `Course Link: ...`, line 3 `Course Instructor: ...`, then `Lesson N: Title` markers, optionally followed by a `Lesson Link: ...` line. Files without lesson markers fall back to a single unnumbered chunk stream.
-- Supported extensions for folder ingestion: `.pdf`, `.docx`, `.txt`. Note that `DocumentProcessor.read_file` only reads text, so PDF/DOCX content will not be parsed correctly with the current code.
+- Supported extensions for folder ingestion: `.pdf`, `.docx`, `.txt`. Note that `DocumentProcessor.read_file` (which delegates to `utils/file_utils.read_text_file`) only reads text, so PDF/DOCX content will not be parsed correctly with the current code.
+- **Log, don't print.** Modules use `logger = logging.getLogger(__name__)`; handlers are configured once by `setup_logging()` in `app.py`. Don't add `print()` or call `logging.basicConfig()`. Use `logger.exception(...)` inside `except` blocks so tracebacks are kept.
 - The LLM provider is any OpenAI-compatible endpoint, set via `LLM_BASE_URL` / `LLM_MODEL` (defaults in `backend/config.py`: Groq). API limits (`max_output_tokens=1600`, `temperature=0`) are in `AIGenerator.base_params`.
 
 ## Architecture
@@ -37,10 +39,16 @@ The request flow spans several modules, so it helps to read them together:
    - `course_catalog`: one document per course, keyed by course title (the ID). Metadata holds link, instructor, and a JSON blob of lessons. Used for **fuzzy course-name resolution**: a `course_name` filter is first resolved by vector-searching this collection, and the top hit's title becomes an exact `where` filter on `course_content`.
    - `course_content`: chunked lesson text with metadata `course_title`, `lesson_number`, `chunk_index`. Chunk IDs are `{title with spaces→_}_{chunk_index}`.
    Embeddings use `SentenceTransformerEmbeddingFunction` with `all-MiniLM-L6-v2`, which runs locally and downloads on first use.
-6. **`backend/document_processor.py`** — Parses course files and chunks lesson text by sentences (target `CHUNK_SIZE`=800 chars with `CHUNK_OVERLAP`=100). The first chunk of each lesson is prefixed with `Lesson N content:`; the last lesson's chunks are prefixed with the course title and lesson number. Chunk-prefix behavior is inconsistent across lesson branches, so check both before changing it.
+6. **`backend/document_processor.py`** — Parses course files and chunks lesson text by sentences (target `CHUNK_SIZE`=800 chars with `CHUNK_OVERLAP`=100). The chunking algorithm itself lives in `utils/text_utils.chunk_text`; `DocumentProcessor.chunk_text` is a thin wrapper that passes the configured sizes. The first chunk of each lesson is prefixed with `Lesson N content:`; the last lesson's chunks are prefixed with the course title and lesson number. Chunk-prefix behavior is inconsistent across lesson branches, so check both before changing it.
 7. **`backend/session_manager.py`** — In-memory dict of sessions, keyed `session_N`. Keeps the last `MAX_HISTORY * 2` messages. Lost on restart.
-8. **`backend/config.py`** — Single `Config` dataclass instance, loads `.env` via `python-dotenv`. Tunables: chunk size/overlap, `MAX_RESULTS` (search top-k), `MAX_HISTORY` (exchanges remembered).
+8. **`backend/config.py`** — Single `Config` dataclass instance, loads `.env` via `python-dotenv`. Tunables: chunk size/overlap, `MAX_RESULTS` (search top-k), `MAX_HISTORY` (exchanges remembered), `LOG_LEVEL` (default `INFO`) and `LOG_FILE` (optional rotating log file; console only when unset).
 9. **`frontend/`** — Plain HTML/JS/CSS with no build step. `script.js` calls `/api/query` and `/api/courses`, and keeps the `session_id` returned by the server to continue conversations.
+10. **`backend/utils/`** — Shared helpers with no dependency on the domain modules. Import from the specific submodule:
+   - `file_utils.py` — `read_text_file` (UTF-8 read, falls back to ignoring invalid bytes).
+   - `text_utils.py` — `chunk_text(text, chunk_size, chunk_overlap)`, the sentence chunker.
+   - `http_utils.py` — `parse_retry_after(headers)`, reads a numeric Retry-After header (HTTP-date values return None).
+   - `logging_config.py` — `setup_logging(level, log_file)`. Replaces existing handlers on each call, and quiets chatty third-party loggers (httpx, openai, urllib3, huggingface_hub, …).
+   Put new cross-module helpers here rather than in a domain module.
 
 Data flow for a query: UI → `/api/query` → `RAGSystem.query` → LLM (may call `search_course_content`) → `VectorStore.search` (optional course-name resolution, then filtered Chroma query) → LLM writes the final answer → response includes `sources` from the tool.
 
