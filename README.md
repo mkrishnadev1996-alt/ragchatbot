@@ -6,12 +6,15 @@ A Retrieval-Augmented Generation (RAG) system designed to answer questions about
 
 This application is a full-stack web application that enables users to query course materials and receive intelligent, context-aware responses. It uses ChromaDB for vector storage, any OpenAI-compatible LLM API (Groq, Google Gemini, etc.) for AI generation, and provides a web interface for interaction.
 
+An optional input guard screens every question before it reaches the main LLM. It blocks harmful or illegal requests, jailbreak attempts and out-of-scope questions, and replies "Sorry, we cannot answer that." instead.
+
 
 ## Prerequisites
 
 - Python 3.13 or higher
 - uv (Python package manager)
 - An API key for an OpenAI-compatible LLM provider, e.g. [Groq](https://console.groq.com/) or [Google AI Studio](https://aistudio.google.com/) (Gemini)
+- *(Optional)* An [OpenRouter](https://openrouter.ai/) API key to enable the input guard
 - **For Windows**: Use Git Bash to run the application commands - [Download Git for Windows](https://git-scm.com/downloads/win)
 
 ## Installation
@@ -35,6 +38,12 @@ This application is a full-stack web application that enables users to query cou
    LLM_MODEL=llama-3.3-70b-versatile
    ```
    For Google Gemini instead, use `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/` and `LLM_MODEL=gemini-2.5-flash`. See `.env.example`.
+
+   **Input guard (optional).** To enable it, also set:
+   ```bash
+   GUARD_API_KEY=your_openrouter_api_key_here
+   ```
+   It uses `respan/span-01-lite:free` through the OpenRouter Decisions API (alpha) and blocks a question when any of its harmful, jailbreak or out-of-scope scores reaches `GUARD_THRESHOLD` (default `0.5`). Optional overrides: `GUARD_URL`, `GUARD_MODEL`, `GUARD_THRESHOLD`. Without `GUARD_API_KEY` the guard is off and every question goes to the LLM. If the guard service errors, the question is allowed through. The out-of-scope check is tuned to the current AI/software courses, so adjust `InputGuard.BEHAVIORS` in `backend/input_guard.py` if you add courses on other subjects.
 
 ## Running the Application
 
