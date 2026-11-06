@@ -5,12 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "chromadb==1.0.15",
-    "sentence-transformers==5.0.0",
-    "fastapi==0.116.1",
-    "uvicorn==0.35.0",
-    "python-multipart==0.0.20",
-    "python-dotenv==1.1.1",
+    "chromadb>=1.0.15",
+    "sentence-transformers>=5.0.0",
+    "fastapi>=0.116.1",
+    "uvicorn>=0.35.0",
+    "python-multipart>=0.0.20",
+    "python-dotenv>=1.1.1",
     "openai==3.42.1",
     "langchain-openai>=1.7.4",
     "langchain-core>=1.7.6",
