@@ -57,8 +57,11 @@ class MessageStore:
                 (user_id, session_id, message_id, answer, json.dumps(sources)),
             )
 
-    def list_messages(self, user_id: int, limit: int = 200) -> list[dict]:
-        """The user's most recent messages, oldest first, with any thumbs rating attached."""
+    def list_messages(
+        self, user_id: int, limit: int = 200, session_id: str | None = None
+    ) -> list[dict]:
+        """The user's most recent messages (optionally of one session), oldest first,
+        with any thumbs rating attached."""
         with closing(self._connect()) as conn:
             # The feedback table is created by FeedbackStore; make sure it exists for the join.
             conn.execute(
@@ -78,11 +81,11 @@ class MessageStore:
                 SELECT m.role, m.content, m.sources, m.message_id, f.rating
                 FROM messages m
                 LEFT JOIN feedback f ON f.message_id = m.message_id AND f.user_id = m.user_id
-                WHERE m.user_id = ?
+                WHERE m.user_id = ? AND (? IS NULL OR m.session_id = ?)
                 ORDER BY m.id DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                (user_id, session_id, session_id, limit),
             ).fetchall()
         return [
             {

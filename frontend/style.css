@@ -111,6 +111,29 @@ header h1 {
     margin-bottom: 0;
 }
 
+.sidebar-button {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--primary-color);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.sidebar-button:hover {
+    background: var(--primary-hover);
+}
+
+.sidebar-button:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 /* Main Chat Area */
 .chat-main {
     flex: 1;

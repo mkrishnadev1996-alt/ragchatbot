@@ -3,6 +3,34 @@ const API_URL = '/api';
 
 // Global state
 let currentSessionId = null;
+const SESSION_KEY = 'chatSessionId';
+
+const SESSION_OWNER_KEY = 'chatSessionOwner';
+let currentUserId = null;
+
+// The session id (and its owner) survives refresh and logout/login (per tab), so the
+// chat can be restored for the same user until they clear it
+function setSessionId(id) {
+    currentSessionId = id;
+    try {
+        if (id) {
+            sessionStorage.setItem(SESSION_KEY, id);
+            sessionStorage.setItem(SESSION_OWNER_KEY, String(currentUserId));
+        } else {
+            sessionStorage.removeItem(SESSION_KEY);
+            sessionStorage.removeItem(SESSION_OWNER_KEY);
+        }
+    } catch (_) { /* storage unavailable: session just won't survive a refresh */ }
+}
+
+function storedSession() {
+    try {
+        return {
+            id: sessionStorage.getItem(SESSION_KEY),
+            owner: sessionStorage.getItem(SESSION_OWNER_KEY)
+        };
+    } catch (_) { return { id: null, owner: null }; }
+}
 let authToken = null;
 let authMode = 'login'; // 'login' | 'register'
 
@@ -35,7 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     setupEventListeners();
     setupAuth();
-    createNewSession();
+    showWelcome();
     loadCourseStats();
 });
 
@@ -46,6 +74,7 @@ function setupAuth() {
         setAuthMode(authMode === 'login' ? 'register' : 'login');
     });
     document.getElementById('logoutButton').addEventListener('click', logout);
+    document.getElementById('clearChatButton').addEventListener('click', createNewSession);
 
     authToken = loadToken();
     if (authToken) {
@@ -87,14 +116,26 @@ function showUser(user) {
     document.getElementById('userEmail').textContent = user.email;
     document.getElementById('userMenu').hidden = false;
     chatInput.focus();
-    loadHistory();
+
+    // Resume this user's last session if they didn't clear it; never another user's
+    currentUserId = user.id;
+    const stored = storedSession();
+    showWelcome();
+    if (stored.id && stored.owner === String(user.id)) {
+        currentSessionId = stored.id;
+        loadHistory();
+    } else {
+        setSessionId(null);
+    }
 }
 
-// Replay the user's saved conversation below the welcome message
+// Restore the messages of the current session (after a refresh) below the welcome message
 async function loadHistory() {
+    if (!currentSessionId) return;
+    const sessionId = currentSessionId;
     try {
-        const response = await authFetch(`${API_URL}/messages`);
-        if (!response.ok) return;
+        const response = await authFetch(`${API_URL}/messages?session_id=${encodeURIComponent(sessionId)}`);
+        if (!response.ok || sessionId !== currentSessionId) return;
         const messages = await response.json();
         for (const m of messages) {
             addMessage(m.content, m.role, m.sources, false, m.message_id, m.rating);
@@ -131,7 +172,6 @@ async function submitAuth(event) {
         }
         saveToken(data.token);
         document.getElementById('authPassword').value = '';
-        createNewSession(); // a new account/login starts a fresh conversation
         showUser(data.user);
     } catch (error) {
         setAuthError(error.message || 'Something went wrong. Please try again.');
@@ -142,7 +182,10 @@ async function submitAuth(event) {
 
 function logout() {
     saveToken(null);
-    createNewSession();
+    // Hide the chat but keep the stored session so logging back in resumes it
+    currentSessionId = null;
+    currentUserId = null;
+    showWelcome();
     showAuthModal();
 }
 
@@ -215,7 +258,7 @@ async function sendMessage() {
                 message = 'Your session expired. Please log in again.';
             } else if (response.status === 404) {
                 // Session unknown to the server (e.g. it restarted): start fresh
-                currentSessionId = null;
+                setSessionId(null);
                 message = 'Your conversation was reset. Please ask again.';
             } else if (response.status === 429) {
                 message = 'The AI service is busy. Please try again in a moment.';
@@ -231,7 +274,7 @@ async function sendMessage() {
         
         // Update session ID if new
         if (!currentSessionId) {
-            currentSessionId = data.session_id;
+            setSessionId(data.session_id);
         }
 
         // Replace loading message with response
@@ -380,8 +423,12 @@ function escapeHtml(text) {
 
 // Removed removeMessage function - no longer needed since we handle loading differently
 
-async function createNewSession() {
-    currentSessionId = null;
+function createNewSession() {
+    setSessionId(null);
+    showWelcome();
+}
+
+function showWelcome() {
     chatMessages.innerHTML = '';
     addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
 }
