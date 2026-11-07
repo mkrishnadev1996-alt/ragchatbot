@@ -1,6 +1,7 @@
 import logging
 
 import httpx
+from langsmith import get_current_run_tree, traceable
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,21 @@ class InputGuard:
             scores[qid] = float(answer["noul"])
         return scores
 
+    @traceable(name="input_guard", run_type="tool")
     def is_safe(self, query: str) -> bool:
         """Return True if the query may proceed to the normal flow"""
         try:
             scores = self._scores(query)
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.exception("Input guard call failed (model=%s); allowing query", self.model)
+            run = get_current_run_tree()
+            if run is not None:
+                run.metadata["guard_failed_open"] = True
             return True
 
+        run = get_current_run_tree()
+        if run is not None:
+            run.metadata.update({"guard_scores": scores, "guard_threshold": self.threshold})
         flagged = {qid: p for qid, p in scores.items() if p >= self.threshold}
         if flagged:
             logger.warning("Input guard blocked a query (scores=%s)", scores)

@@ -4,6 +4,7 @@ from typing import Any
 
 import chromadb
 from chromadb.config import Settings
+from langsmith import traceable
 from models import Course, CourseChunk
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,18 @@ class SearchResults:
         return len(self.documents) == 0
 
 
+def _retrieval_output(results: "SearchResults") -> dict[str, Any]:
+    """Shape results for LangSmith's retriever view (page_content + metadata per document)"""
+    # Tolerant of None metadata / uneven lists: tracing must never break a search
+    documents = [
+        {"page_content": doc, "metadata": {**(meta or {}), "distance": dist}}
+        for doc, meta, dist in zip(  # noqa: B905
+            results.documents, results.metadata, results.distances
+        )
+    ]
+    return {"documents": documents, "error": results.error}
+
+
 class VectorStore:
     """Vector storage using ChromaDB for course content and metadata"""
 
@@ -67,6 +80,7 @@ class VectorStore:
             embedding_function=self.embedding_function,  # type: ignore[arg-type]
         )
 
+    @traceable(name="vector_store.search", run_type="retriever", process_outputs=_retrieval_output)
     def search(
         self,
         query: str,

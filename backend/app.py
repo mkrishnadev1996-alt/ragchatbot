@@ -91,7 +91,14 @@ async def query_documents(request: QueryRequest, user: User = Depends(get_curren
         logger.debug("Query text (session=%s): %s", session_id, request.query)
 
         # Process query using RAG system
-        answer, sources = rag_system.query(request.query, session_id)
+        answer, sources = rag_system.query(
+            request.query,
+            session_id,
+            langsmith_extra={
+                "metadata": {"user_id": user.id, "session_id": session_id},
+                "tags": ["api"],
+            },
+        )
 
         return QueryResponse(answer=answer, sources=sources, session_id=session_id)
     except HTTPException:
