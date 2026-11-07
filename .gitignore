@@ -33,3 +33,5 @@ Thumbs.db
 
 # User accounts
 backend/users.db
+
+.playwright-mcp/
