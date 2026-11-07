@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import NamedTuple
 
 from ai_generator import AIGenerator
 from document_processor import DocumentProcessor
@@ -18,6 +19,14 @@ def _annotate_run(**metadata) -> None:
     run = get_current_run_tree()
     if run is not None:
         run.metadata.update(metadata)
+
+
+class QueryResult(NamedTuple):
+    """Outcome of RAGSystem.query"""
+
+    answer: str
+    sources: list[str]
+    blocked: bool = False  # True when the input guard refused the message
 
 
 class RAGSystem:
@@ -142,7 +151,7 @@ class RAGSystem:
         return total_courses, total_chunks
 
     @traceable(name="rag_query", run_type="chain")
-    def query(self, query: str, session_id: str | None = None) -> tuple[str, list[str]]:
+    def query(self, query: str, session_id: str | None = None) -> QueryResult:
         """
         Process a user query using the RAG system with tool-based search.
 
@@ -151,44 +160,41 @@ class RAGSystem:
             session_id: Optional session ID for conversation context
 
         Returns:
-            Tuple of (response, sources list - empty for tool-based approach)
+            QueryResult(answer, sources, blocked)
         """
-        logger.debug("RAG query (session=%s): %s", session_id, query)
-
-        # Reject harmful, jailbreak or out-of-scope input before any main-LLM call.
-        # Blocked exchanges are not stored in the session history.
-        if self.input_guard and not self.input_guard.is_safe(query):
-            _annotate_run(blocked=True)
-            return InputGuard.BLOCKED_MESSAGE, []
-        _annotate_run(blocked=False, model=self.config.LLM_MODEL)
-
-        # Create prompt for the AI with clear instructions
-        prompt = f"""Answer this question about course materials: {query}"""
+        logger.debug("RAG query (session=%s, %d chars)", session_id, len(query))
 
         # Get conversation history if session exists
         history = None
         if session_id:
             history = self.session_manager.get_conversation_history(session_id)
 
-        # Generate response using AI with tools. Sources are reset even if the LLM call
-        # fails, so a failed request cannot leak its sources into the next answer.
-        try:
-            response = self.ai_generator.generate_response(
-                query=prompt,
-                conversation_history=history,
-                tools=self.tool_manager.get_tool_definitions(),
-                tool_manager=self.tool_manager,
-            )
-            sources = self.tool_manager.get_last_sources()
-        finally:
-            self.tool_manager.reset_sources()
+        # Reject harmful, jailbreak or out-of-scope input before any main-LLM call.
+        # Blocked exchanges are not stored in the session history.
+        if self.input_guard and not self.input_guard.is_safe(query, history):
+            _annotate_run(blocked=True)
+            return QueryResult(InputGuard.BLOCKED_MESSAGE, [], blocked=True)
+        _annotate_run(blocked=False, model=self.config.LLM_MODEL)
+
+        # Create prompt for the AI with clear instructions
+        prompt = f"""Answer this question about course materials: {query}"""
+
+        # Sources are collected in a per-request list, so concurrent requests stay isolated
+        sources: list[str] = []
+        response = self.ai_generator.generate_response(
+            query=prompt,
+            conversation_history=history,
+            tools=self.tool_manager.get_tool_definitions(),
+            tool_manager=self.tool_manager,
+            sources_out=sources,
+        )
 
         # Update conversation history
         if session_id:
             self.session_manager.add_exchange(session_id, query, response)
 
         # Return response with sources from tool searches
-        return response, sources
+        return QueryResult(response, sources)
 
     def get_course_analytics(self) -> dict:
         """Get analytics about the course catalog"""

@@ -2,6 +2,7 @@
 
 import logging
 import math
+import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -14,6 +15,8 @@ from user_store import User, UserExistsError, UserStore
 from utils.security import create_token, decode_token, hash_password, verify_password
 
 logger = logging.getLogger(__name__)
+
+MIN_SECRET_LENGTH = 32
 
 # A real hash to verify against when the email is unknown, so timing doesn't leak existence.
 _DUMMY_HASH = hash_password("dummy-password")
@@ -49,8 +52,13 @@ class RateLimiter:
         self.window = window_seconds
         self.detail = detail
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()  # handlers run in a threadpool
 
     def check(self, key: str) -> None:
+        with self._lock:
+            self._check(key)
+
+    def _check(self, key: str) -> None:
         now = time.monotonic()
         hits = self._hits[key]
         while hits and now - hits[0] > self.window:
@@ -70,6 +78,11 @@ def create_auth(
     """Build the auth router and the ``get_current_user`` dependency."""
     if not secret:
         raise RuntimeError("JWT_SECRET is not set; refusing to start without auth configured")
+    if len(secret) < MIN_SECRET_LENGTH:
+        raise RuntimeError(
+            f"JWT_SECRET is too short ({len(secret)} chars); use at least {MIN_SECRET_LENGTH}, "
+            'e.g. python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
 
     router = APIRouter(prefix="/api/auth", tags=["auth"])
     bearer = HTTPBearer(auto_error=False)

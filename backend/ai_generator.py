@@ -80,6 +80,7 @@ Provide only the direct answer to what was asked.
         conversation_history: list[dict[str, str]] | None = None,
         tools: list | None = None,
         tool_manager=None,
+        sources_out: list[str] | None = None,
     ) -> str:
         """
         Generate AI response with optional tool usage and conversation context.
@@ -91,6 +92,7 @@ Provide only the direct answer to what was asked.
             tools: Available tools the AI can use (nested function-tool format
                 {"type": "function", "function": {...}}, as accepted by bind_tools)
             tool_manager: Manager to execute tools
+            sources_out: Optional per-request list that tool sources are appended to
 
         Returns:
             Generated response as string
@@ -109,13 +111,17 @@ Provide only the direct answer to what was asked.
 
         # Handle tool execution if needed
         if response.tool_calls and tool_manager:
-            return self._handle_tool_execution(response, messages, tool_manager)
+            return self._handle_tool_execution(response, messages, tool_manager, sources_out)
 
         # Return direct response
         return response.text
 
     def _handle_tool_execution(
-        self, response: AIMessage, messages: list[BaseMessage], tool_manager
+        self,
+        response: AIMessage,
+        messages: list[BaseMessage],
+        tool_manager,
+        sources_out: list[str] | None = None,
     ):
         """
         Handle execution of tool calls and get follow-up response.
@@ -124,6 +130,7 @@ Provide only the direct answer to what was asked.
             response: The AI message containing tool call requests
             messages: Messages sent in the initial request (system + history + user query)
             tool_manager: Manager to execute tools
+            sources_out: Optional list that sources from tool results are appended to
 
         Returns:
             Final response text after tool execution
@@ -134,10 +141,20 @@ Provide only the direct answer to what was asked.
         for tool_call in response.tool_calls:
             name, arguments = tool_call["name"], tool_call["args"]
             logger.info("Executing tool %s", name)
-            logger.debug("Tool %s arguments: %s", name, arguments)
-            tool_result = tool_manager.execute_tool(name, **arguments)
-            logger.debug("Tool %s returned %d chars", name, len(tool_result))
-            follow_up.append(ToolMessage(content=tool_result, tool_call_id=tool_call["id"] or ""))
+            try:
+                if not isinstance(arguments, dict):
+                    raise TypeError("tool arguments must be a JSON object")
+                result = tool_manager.execute_tool(name, **arguments)
+                text = result.text
+                if sources_out is not None:
+                    sources_out.extend(result.sources)
+            except Exception as e:
+                # Bad arguments or a failing tool must not fail the request: hand the error
+                # to the model so it can answer without the tool or retry differently.
+                logger.exception("Tool %s failed", name)
+                text = f"Error: the {name} tool failed ({type(e).__name__}). Answer without it."
+            logger.debug("Tool %s returned %d chars", name, len(text))
+            follow_up.append(ToolMessage(content=text, tool_call_id=tool_call["id"] or ""))
 
         # Final call on the unbound model: no tools, so this is the last round
         final_response = self._invoke(self.llm, follow_up)

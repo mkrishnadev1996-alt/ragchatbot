@@ -2,7 +2,7 @@ import os
 import re
 
 from models import Course, CourseChunk, Lesson
-from utils.file_utils import read_text_file
+from utils.file_utils import read_document
 from utils.text_utils import chunk_text as split_into_chunks
 
 
@@ -14,8 +14,8 @@ class DocumentProcessor:
         self.chunk_overlap = chunk_overlap
 
     def read_file(self, file_path: str) -> str:
-        """Read content from file with UTF-8 encoding"""
-        return read_text_file(file_path)
+        """Read a .txt, .pdf or .docx file as plain text"""
+        return read_document(file_path)
 
     def chunk_text(self, text: str) -> list[str]:
         """Split text into sentence-based chunks with overlap using config settings"""
@@ -73,12 +73,33 @@ class DocumentProcessor:
         )
 
         # Process lessons and create chunks
-        course_chunks = []
-        current_lesson = None
+        course_chunks: list[CourseChunk] = []
+        current_lesson: int | None = None
         lesson_title: str = ""
         lesson_link: str | None = None
         lesson_content: list[str] = []
-        chunk_counter = 0
+
+        def finish_lesson() -> None:
+            """Turn the lesson collected so far into a Lesson entry plus chunks"""
+            if current_lesson is None:
+                return
+            lesson_text = chr(10).join(lesson_content).strip()
+            if not lesson_text:
+                return
+            course.lessons.append(
+                Lesson(lesson_number=current_lesson, title=lesson_title, lesson_link=lesson_link)
+            )
+            # Every chunk carries the same course + lesson context prefix
+            prefix = f"Course {course.title} Lesson {current_lesson} content: "
+            for chunk in self.chunk_text(lesson_text):
+                course_chunks.append(
+                    CourseChunk(
+                        content=prefix + chunk,
+                        course_title=course.title,
+                        lesson_number=current_lesson,
+                        chunk_index=len(course_chunks),
+                    )
+                )
 
         # Start processing from line 4 (after metadata)
         start_index = 3
@@ -93,35 +114,7 @@ class DocumentProcessor:
             lesson_match = re.match(r"^Lesson\s+(\d+):\s*(.+)$", line.strip(), re.IGNORECASE)
 
             if lesson_match:
-                # Process previous lesson if it exists
-                if current_lesson is not None and lesson_content:
-                    lesson_text = "\n".join(lesson_content).strip()
-                    if lesson_text:
-                        # Add lesson to course
-                        lesson = Lesson(
-                            lesson_number=current_lesson,
-                            title=lesson_title,
-                            lesson_link=lesson_link,
-                        )
-                        course.lessons.append(lesson)
-
-                        # Create chunks for this lesson
-                        chunks = self.chunk_text(lesson_text)
-                        for idx, chunk in enumerate(chunks):
-                            # For the first chunk of each lesson, add lesson context
-                            if idx == 0:
-                                chunk_with_context = f"Lesson {current_lesson} content: {chunk}"
-                            else:
-                                chunk_with_context = chunk
-
-                            course_chunk = CourseChunk(
-                                content=chunk_with_context,
-                                course_title=course.title,
-                                lesson_number=current_lesson,
-                                chunk_index=chunk_counter,
-                            )
-                            course_chunks.append(course_chunk)
-                            chunk_counter += 1
+                finish_lesson()
 
                 # Start new lesson
                 current_lesson = int(lesson_match.group(1))
@@ -143,30 +136,7 @@ class DocumentProcessor:
 
             i += 1
 
-        # Process the last lesson
-        if current_lesson is not None and lesson_content:
-            lesson_text = "\n".join(lesson_content).strip()
-            if lesson_text:
-                lesson = Lesson(
-                    lesson_number=current_lesson, title=lesson_title, lesson_link=lesson_link
-                )
-                course.lessons.append(lesson)
-
-                chunks = self.chunk_text(lesson_text)
-                for chunk in chunks:
-                    # For any chunk of each lesson, add lesson context & course title
-                    chunk_with_context = (
-                        f"Course {course_title} Lesson {current_lesson} content: {chunk}"
-                    )
-
-                    course_chunk = CourseChunk(
-                        content=chunk_with_context,
-                        course_title=course.title,
-                        lesson_number=current_lesson,
-                        chunk_index=chunk_counter,
-                    )
-                    course_chunks.append(course_chunk)
-                    chunk_counter += 1
+        finish_lesson()  # the last lesson
 
         # If no lessons found, treat entire content as one document
         if not course_chunks and len(lines) > 2:
@@ -174,10 +144,12 @@ class DocumentProcessor:
             if remaining_content:
                 chunks = self.chunk_text(remaining_content)
                 for chunk in chunks:
-                    course_chunk = CourseChunk(
-                        content=chunk, course_title=course.title, chunk_index=chunk_counter
+                    course_chunks.append(
+                        CourseChunk(
+                            content=f"Course {course.title} content: {chunk}",
+                            course_title=course.title,
+                            chunk_index=len(course_chunks),
+                        )
                     )
-                    course_chunks.append(course_chunk)
-                    chunk_counter += 1
 
         return course, course_chunks

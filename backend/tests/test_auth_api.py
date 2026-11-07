@@ -92,6 +92,11 @@ class TestAuthApi(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             create_auth(store, "", 60)
 
+    def test_short_secret_fails_fast(self):
+        store = UserStore(os.path.join(self.tmp.name, "y.db"))
+        with self.assertRaises(RuntimeError):
+            create_auth(store, "x" * 31, 60)
+
 
 if __name__ == "__main__":
     unittest.main()

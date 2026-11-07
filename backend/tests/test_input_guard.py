@@ -30,6 +30,20 @@ class TestInputGuard(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.guard = InputGuard("key", "http://guard.test", "guard-model", threshold=0.5)
 
+    def test_history_is_sent_as_context_for_follow_ups(self):
+        self.post.return_value = make_response(scores())
+        history = [
+            {"role": "user", "content": "Tell me about MCP"},
+            {"role": "assistant", "content": "MCP is a protocol."},
+        ]
+
+        self.guard.is_safe("and lesson 3?", history)
+
+        state = self.post.call_args.kwargs["json"]["state"]
+        self.assertIn("user: Tell me about MCP", state)
+        self.assertIn("and lesson 3?", state)
+        self.assertTrue(state.rstrip().endswith("and lesson 3?"))
+
     def test_request_shape(self):
         self.post.return_value = make_response(scores())
 

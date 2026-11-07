@@ -320,7 +320,7 @@ function addMessage(content, type, sources = null, isWelcome = false, feedbackId
     messageDiv.id = `message-${messageId}`;
     
     // Convert markdown to HTML for assistant messages
-    const displayContent = type === 'assistant' ? marked.parse(content) : escapeHtml(content);
+    const displayContent = type === 'assistant' ? renderMarkdown(content) : escapeHtml(content);
     
     let html = `<div class="message-content">${displayContent}</div>`;
     
@@ -418,6 +418,15 @@ function renderSources(sources) {
             ${chips ? `<div class="source-lessons">${chips}</div>` : ''}
         </div>`;
     }).join('');
+}
+
+// Markdown -> sanitized HTML. Falls back to escaped text if the vendored libraries are missing,
+// so a failed script load can never inject markup or break the rest of the page.
+function renderMarkdown(text) {
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+        return escapeHtml(text);
+    }
+    return DOMPurify.sanitize(marked.parse(text));
 }
 
 // Helper function to escape HTML for user messages
