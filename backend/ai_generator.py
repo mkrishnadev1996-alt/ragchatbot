@@ -54,15 +54,23 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
 
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        max_tokens: int = 1600,
+        temperature: float = 0,
+        max_retries: int = 3,
+    ):
         # max_retries is passed to the OpenAI SDK, which retries 429s and 5xx with backoff
         self.llm = ChatOpenAI(
             model=model,
             api_key=api_key,  # type: ignore[arg-type]
             base_url=base_url,
-            temperature=0,
-            max_tokens=1600,  # type: ignore[call-arg]
-            max_retries=3,
+            temperature=temperature,
+            max_tokens=max_tokens,  # type: ignore[call-arg]
+            max_retries=max_retries,
         )
         self.model = model
 
