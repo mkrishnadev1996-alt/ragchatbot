@@ -84,7 +84,8 @@ class TestAuthApi(unittest.TestCase):
             limiter.check("user:1")
         self.assertEqual(ctx.exception.status_code, 429)
         self.assertEqual(ctx.exception.detail, "slow down")
-        self.assertTrue(1 <= int(ctx.exception.headers["Retry-After"]) <= 60)
+        headers = ctx.exception.headers or {}
+        self.assertTrue(1 <= int(headers["Retry-After"]) <= 60)
 
     def test_missing_secret_fails_fast(self):
         store = UserStore(os.path.join(self.tmp.name, "x.db"))
