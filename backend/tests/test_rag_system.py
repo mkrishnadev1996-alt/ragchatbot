@@ -20,6 +20,9 @@ def make_config():
         LLM_API_KEY="key",
         LLM_BASE_URL="http://llm.test",
         LLM_MODEL="test-model",
+        LLM_MAX_TOKENS=1600,
+        LLM_TEMPERATURE=0,
+        LLM_MAX_RETRIES=3,
     )
 
 
@@ -44,6 +47,7 @@ class TestRAGSystem(unittest.TestCase):
         cfg = make_config()
         cfg.GUARD_API_KEY, cfg.GUARD_URL, cfg.GUARD_MODEL = "k", "http://g.test", "g"
         cfg.GUARD_THRESHOLD = 0.5
+        cfg.GUARD_TIMEOUT = 10.0
         with patch("rag_system.InputGuard") as guard_cls:
             guard_cls.BLOCKED_MESSAGE = "Sorry, we cannot answer that."
             guard_cls.return_value.is_safe.return_value = False
@@ -61,6 +65,7 @@ class TestRAGSystem(unittest.TestCase):
         cfg = make_config()
         cfg.GUARD_API_KEY, cfg.GUARD_URL, cfg.GUARD_MODEL = "k", "http://g.test", "g"
         cfg.GUARD_THRESHOLD = 0.5
+        cfg.GUARD_TIMEOUT = 10.0
         with patch("rag_system.InputGuard") as guard_cls:
             guard_cls.return_value.is_safe.return_value = True
             rag = RAGSystem(cfg)

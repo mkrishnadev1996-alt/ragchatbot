@@ -17,11 +17,13 @@ class StoredMessage(BaseModel):
     rating: Literal["up", "down"] | None
 
 
-def create_messages_router(store: MessageStore, get_current_user: Callable[..., User]) -> APIRouter:
+def create_messages_router(
+    store: MessageStore, get_current_user: Callable[..., User], limit: int = 200
+) -> APIRouter:
     router = APIRouter(prefix="/api/messages", tags=["messages"])
 
     @router.get("", response_model=list[StoredMessage])
     def list_messages(session_id: str | None = None, user: User = Depends(get_current_user)):
-        return store.list_messages(user.id, session_id=session_id)
+        return store.list_messages(user.id, limit=limit, session_id=session_id)
 
     return router

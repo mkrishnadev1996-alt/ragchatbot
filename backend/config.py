@@ -15,17 +15,27 @@ class Config:
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1600"))  # Max tokens per completion
+    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0"))
+    LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))  # SDK retries on 429/5xx
 
     # Input guard (decision model on OpenRouter). Disabled when GUARD_API_KEY is empty.
     GUARD_API_KEY: str = os.getenv("GUARD_API_KEY", "")
     GUARD_URL: str = os.getenv("GUARD_URL", "https://openrouter.ai/api/alpha/decisions")
     GUARD_MODEL: str = os.getenv("GUARD_MODEL", "respan/span-01-lite:free")
     GUARD_THRESHOLD: float = float(os.getenv("GUARD_THRESHOLD", "0.5"))  # block when P >= this
+    GUARD_TIMEOUT: float = float(os.getenv("GUARD_TIMEOUT", "10"))  # Seconds per guard request
 
     # Authentication (JWT bearer tokens, users stored in SQLite)
     JWT_SECRET: str = os.getenv("JWT_SECRET", "")
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24)))
     USERS_DB_PATH: str = os.getenv("USERS_DB_PATH", "./users.db")
+    PASSWORD_MIN_LENGTH: int = 8
+    PASSWORD_MAX_LENGTH: int = 128
+    AUTH_RATE_LIMIT: int = int(
+        os.getenv("AUTH_RATE_LIMIT", "10")
+    )  # Login/register per window, per IP
+    AUTH_RATE_WINDOW: int = int(os.getenv("AUTH_RATE_WINDOW", "60"))  # Window in seconds
 
     # LangSmith tracing is switched on by LANGSMITH_TRACING / LANGSMITH_API_KEY / LANGSMITH_PROJECT,
     # which LangChain reads straight from the environment. This flag controls whether prompts,
@@ -50,6 +60,11 @@ class Config:
     # Per-user rate limit on /api/query (each query costs an LLM call)
     QUERY_RATE_LIMIT: int = int(os.getenv("QUERY_RATE_LIMIT", "20"))  # Max queries per window
     QUERY_RATE_WINDOW: int = int(os.getenv("QUERY_RATE_WINDOW", "60"))  # Window in seconds
+
+    # Message history and HTTP caching
+    MAX_STORED_MESSAGES: int = 200  # Messages returned by GET /api/messages
+    CONFIG_CACHE_SECONDS: int = 3600  # Cache-Control max-age for /api/config
+    COURSES_CACHE_SECONDS: int = 60  # Cache-Control max-age for /api/courses
 
     # Database paths
     CHROMA_PATH: str = "./chroma_db"  # ChromaDB storage location
