@@ -264,7 +264,7 @@ function addMessage(content, type, sources = null, isWelcome = false) {
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
-                <div class="sources-content">${sources.join(', ')}</div>
+                <div class="sources-content">${renderSources(sources)}</div>
             </details>
         `;
     }
@@ -274,6 +274,28 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
     
     return messageId;
+}
+
+// Group sources ("Course - Lesson N") by course, dedupe, and render as chips
+function renderSources(sources) {
+    const groups = new Map();
+    for (const source of sources) {
+        const idx = source.lastIndexOf(' - Lesson ');
+        const course = idx === -1 ? source : source.slice(0, idx);
+        const lesson = idx === -1 ? null : source.slice(idx + 3);
+        if (!groups.has(course)) groups.set(course, new Set());
+        if (lesson) groups.get(course).add(lesson);
+    }
+    return Array.from(groups, ([course, lessons]) => {
+        const chips = Array.from(lessons)
+            .sort((a, b) => parseInt(a.replace(/\D/g, '')) - parseInt(b.replace(/\D/g, '')))
+            .map(l => `<span class="source-chip">${escapeHtml(l)}</span>`)
+            .join('');
+        return `<div class="source-group">
+            <div class="source-course">${escapeHtml(course)}</div>
+            ${chips ? `<div class="source-lessons">${chips}</div>` : ''}
+        </div>`;
+    }).join('');
 }
 
 // Helper function to escape HTML for user messages
