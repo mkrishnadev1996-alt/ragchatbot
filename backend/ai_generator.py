@@ -62,6 +62,7 @@ Provide only the direct answer to what was asked.
         max_tokens: int = 1600,
         temperature: float = 0,
         max_retries: int = 3,
+        timeout: float | None = 60,
     ):
         # max_retries is passed to the OpenAI SDK, which retries 429s and 5xx with backoff
         self.llm = ChatOpenAI(
@@ -71,6 +72,7 @@ Provide only the direct answer to what was asked.
             temperature=temperature,
             max_tokens=max_tokens,  # type: ignore[call-arg]
             max_retries=max_retries,
+            timeout=timeout,
         )
         self.model = model
 

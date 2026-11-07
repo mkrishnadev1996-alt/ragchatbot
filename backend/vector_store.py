@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -54,8 +56,17 @@ def _retrieval_output(results: "SearchResults") -> dict[str, Any]:
 class VectorStore:
     """Vector storage using ChromaDB for course content and metadata"""
 
-    def __init__(self, chroma_path: str, embedding_model: str, max_results: int = 5):
+    def __init__(
+        self,
+        chroma_path: str,
+        embedding_model: str,
+        max_results: int = 5,
+        max_course_distance: float | None = None,
+    ):
         self.max_results = max_results
+        # Course-name matches farther than this (L2 distance) count as "no such course".
+        # None disables the check.
+        self.max_course_distance = max_course_distance
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
             path=chroma_path, settings=Settings(anonymized_telemetry=False)
@@ -126,6 +137,18 @@ class VectorStore:
             results = self.course_catalog.query(query_texts=[course_name], n_results=1)
 
             if results["documents"][0] and results["metadatas"][0]:
+                distances = results.get("distances") or [[]]
+                if (
+                    self.max_course_distance is not None
+                    and distances[0]
+                    and distances[0][0] > self.max_course_distance
+                ):
+                    logger.info(
+                        "Course name %r too far from any course (distance %.3f)",
+                        course_name,
+                        distances[0][0],
+                    )
+                    return None
                 # Return the title (which is now the ID)
                 return results["metadatas"][0][0]["title"]
         except Exception:
@@ -149,8 +172,6 @@ class VectorStore:
 
     def add_course_metadata(self, course: Course):
         """Add course information to the catalog for semantic search"""
-        import json
-
         course_text = course.title
 
         # Build lessons metadata and serialize as JSON string
@@ -192,10 +213,19 @@ class VectorStore:
             }
             for chunk in chunks
         ]
-        # Use title with chunk index for unique IDs
-        ids = [f"{chunk.course_title.replace(' ', '_')}_{chunk.chunk_index}" for chunk in chunks]
+        ids = [self._chunk_id(chunk) for chunk in chunks]
 
         self.course_content.add(documents=documents, metadatas=metadatas, ids=ids)
+
+    @staticmethod
+    def _chunk_id(chunk: CourseChunk) -> str:
+        """Unique chunk id: a hash of the title (so "A B" and "A_B" differ) plus the index"""
+        digest = hashlib.sha256(chunk.course_title.encode("utf-8")).hexdigest()[:16]
+        return f"{digest}_{chunk.chunk_index}"
+
+    def delete_course_content(self, course_title: str) -> None:
+        """Remove every content chunk of a course (used to roll back a failed ingestion)"""
+        self.course_content.delete(where={"course_title": course_title})
 
     def clear_all_data(self):
         """Clear all data from both collections"""
@@ -209,32 +239,21 @@ class VectorStore:
             logger.exception("Error clearing course data")
 
     def get_existing_course_titles(self) -> list[str]:
-        """Get all existing course titles from the vector store"""
-        try:
-            # Get all documents from the catalog
-            results = self.course_catalog.get()
-            if results and "ids" in results:
-                return results["ids"]
-            return []
-        except Exception:
-            logger.exception("Error getting existing course titles")
-            return []
+        """Get all existing course titles from the vector store.
+
+        Raises if the catalog cannot be read: an empty list means "no courses", and returning
+        it on a failed read would make startup re-insert courses that already exist.
+        """
+        # include=[] returns ids only; the catalog documents are not needed here
+        results = self.course_catalog.get(include=[])
+        return list(results["ids"]) if results and "ids" in results else []
 
     def get_course_count(self) -> int:
-        """Get the total number of courses in the vector store"""
-        try:
-            results = self.course_catalog.get()
-            if results and "ids" in results:
-                return len(results["ids"])
-            return 0
-        except Exception:
-            logger.exception("Error getting course count")
-            return 0
+        """Get the total number of courses in the vector store (raises on a read failure)"""
+        return len(self.get_existing_course_titles())
 
     def get_all_courses_metadata(self) -> list[dict[str, Any]]:
         """Get metadata for all courses in the vector store"""
-        import json
-
         try:
             results = self.course_catalog.get()
             if results and "metadatas" in results:
@@ -267,8 +286,6 @@ class VectorStore:
 
     def get_lesson_link(self, course_title: str, lesson_number: int) -> str | None:
         """Get lesson link for a given course title and lesson number"""
-        import json
-
         try:
             # Get course by ID (title is the ID)
             results = self.course_catalog.get(ids=[course_title])

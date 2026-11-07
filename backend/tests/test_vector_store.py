@@ -151,11 +151,24 @@ class TestVectorStore(unittest.TestCase):
 
         kwargs = self.content.add.call_args.kwargs
         self.assertEqual(kwargs["documents"], ["one", "two"])
-        self.assertEqual(kwargs["ids"], ["My_Course_0", "My_Course_1"])
+        self.assertEqual(len(set(kwargs["ids"])), 2)
+        self.assertTrue(all(i.endswith(("_0", "_1")) for i in kwargs["ids"]))
         self.assertEqual(
             kwargs["metadatas"][0],
             {"course_title": "My Course", "lesson_number": 1, "chunk_index": 0},
         )
+
+    def test_chunk_ids_do_not_collide_for_similar_titles(self):
+        def ids_for(title):
+            chunk = CourseChunk(content="x", course_title=title, chunk_index=0)
+            self.store.add_course_content([chunk])
+            return self.content.add.call_args.kwargs["ids"]
+
+        self.assertNotEqual(ids_for("A B"), ids_for("A_B"))
+
+    def test_delete_course_content_filters_by_title(self):
+        self.store.delete_course_content("My Course")
+        self.content.delete.assert_called_once_with(where={"course_title": "My Course"})
 
     def test_add_empty_chunks_is_noop(self):
         self.store.add_course_content([])
@@ -169,9 +182,41 @@ class TestVectorStore(unittest.TestCase):
         self.catalog.get.return_value = {"ids": ["A", "B", "C"]}
         self.assertEqual(self.store.get_course_count(), 3)
 
-    def test_get_course_count_returns_zero_on_error(self):
+    def test_catalog_read_failure_is_raised_not_reported_as_empty(self):
         self.catalog.get.side_effect = RuntimeError("nope")
-        self.assertEqual(self.store.get_course_count(), 0)
+        with self.assertRaises(RuntimeError):
+            self.store.get_existing_course_titles()
+        with self.assertRaises(RuntimeError):
+            self.store.get_course_count()
+
+    def test_catalog_reads_do_not_fetch_documents(self):
+        self.catalog.get.return_value = {"ids": ["A"]}
+        self.store.get_existing_course_titles()
+        self.catalog.get.assert_called_once_with(include=[])
+
+    def _store_with_threshold(self, threshold):
+        return VectorStore("unused-path", "fake-model", max_course_distance=threshold)
+
+    def test_course_name_beyond_distance_threshold_is_not_found(self):
+        self.catalog.query.return_value = {
+            "documents": [["Some Course"]],
+            "metadatas": [[{"title": "Some Course"}]],
+            "distances": [[1.8]],
+        }
+        results = self._store_with_threshold(1.6).search("q", course_name="banana")
+        self.assertEqual(results.error, "No course found matching 'banana'")
+        self.content.query.assert_not_called()
+
+    def test_course_name_within_distance_threshold_resolves(self):
+        self.catalog.query.return_value = {
+            "documents": [["Some Course"]],
+            "metadatas": [[{"title": "Some Course"}]],
+            "distances": [[0.9]],
+        }
+        self.content.query.return_value = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+        results = self._store_with_threshold(1.6).search("q", course_name="some")
+        self.assertIsNone(results.error)
+        self.content.query.assert_called_once()
 
     def test_get_all_courses_metadata_parses_lessons_json(self):
         self.catalog.get.return_value = {

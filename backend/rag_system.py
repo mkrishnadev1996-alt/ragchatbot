@@ -38,7 +38,10 @@ class RAGSystem:
         # Initialize core components
         self.document_processor = DocumentProcessor(config.CHUNK_SIZE, config.CHUNK_OVERLAP)
         self.vector_store = VectorStore(
-            config.CHROMA_PATH, config.EMBEDDING_MODEL, config.MAX_RESULTS
+            config.CHROMA_PATH,
+            config.EMBEDDING_MODEL,
+            config.MAX_RESULTS,
+            max_course_distance=getattr(config, "COURSE_MATCH_MAX_DISTANCE", None),
         )
         self.ai_generator = AIGenerator(
             config.LLM_API_KEY,
@@ -47,6 +50,7 @@ class RAGSystem:
             max_tokens=config.LLM_MAX_TOKENS,
             temperature=config.LLM_TEMPERATURE,
             max_retries=config.LLM_MAX_RETRIES,
+            timeout=getattr(config, "LLM_TIMEOUT", 60),
         )
         self.session_manager = SessionManager(config.MAX_HISTORY)
 
@@ -71,6 +75,29 @@ class RAGSystem:
         self.search_tool = CourseSearchTool(self.vector_store)
         self.tool_manager.register_tool(self.search_tool)
 
+    def _ingest(self, course: Course, chunks: list) -> bool:
+        """Store a course atomically; returns False if it was skipped.
+
+        The catalog entry is what marks a course as ingested (startup skips known titles), so
+        it is written last: content first, then metadata. If either step fails the content is
+        removed again, and the course is retried on the next start instead of staying
+        half-indexed. A file that produced no chunks is not added at all.
+        """
+        if not chunks:
+            logger.warning("Course %r has no content chunks; skipping", course.title)
+            return False
+        try:
+            self.vector_store.add_course_content(chunks)
+            self.vector_store.add_course_metadata(course)
+        except Exception:
+            logger.exception("Failed to store course %r; rolling back its content", course.title)
+            try:
+                self.vector_store.delete_course_content(course.title)
+            except Exception:
+                logger.exception("Rollback of course %r failed", course.title)
+            raise
+        return True
+
     def add_course_document(self, file_path: str) -> tuple[Course | None, int]:
         """
         Add a single course document to the knowledge base.
@@ -82,15 +109,9 @@ class RAGSystem:
             Tuple of (Course object, number of chunks created)
         """
         try:
-            # Process the document
             course, course_chunks = self.document_processor.process_course_document(file_path)
-
-            # Add course metadata to vector store for semantic search
-            self.vector_store.add_course_metadata(course)
-
-            # Add course content chunks to vector store
-            self.vector_store.add_course_content(course_chunks)
-
+            if not self._ingest(course, course_chunks):
+                return None, 0
             return course, len(course_chunks)
         except Exception:
             logger.exception("Error processing course document %s", file_path)
@@ -135,8 +156,8 @@ class RAGSystem:
 
                     if course and course.title not in existing_course_titles:
                         # This is a new course - add it to the vector store
-                        self.vector_store.add_course_metadata(course)
-                        self.vector_store.add_course_content(course_chunks)
+                        if not self._ingest(course, course_chunks):
+                            continue
                         total_courses += 1
                         total_chunks += len(course_chunks)
                         logger.info(

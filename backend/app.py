@@ -98,7 +98,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(min_length=1, max_length=config.MAX_QUERY_LENGTH)
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, max_length=128)
 
 
 class QueryResponse(BaseModel):
