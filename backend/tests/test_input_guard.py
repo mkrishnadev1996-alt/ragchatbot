@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from input_guard import InputGuard
@@ -91,6 +91,52 @@ class TestInputGuard(unittest.TestCase):
         )
         self.post.return_value = response
         self.assertTrue(self.guard.is_safe("x"))
+
+
+class TestAsyncInputGuard(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.guard = InputGuard("key", "http://guard.test", "guard-model", threshold=0.5)
+        self.post = AsyncMock()
+        patcher = patch.object(httpx.AsyncClient, "post", self.post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self):
+        await self.guard.aclose()
+
+    async def test_request_shape_and_allow(self):
+        self.post.return_value = make_response(scores())
+
+        self.assertTrue(await self.guard.ais_safe("What is MCP?"))
+
+        args, kwargs = self.post.call_args
+        self.assertEqual(args[0], "http://guard.test")
+        self.assertEqual(kwargs["headers"], {"Authorization": "Bearer key"})
+        self.assertEqual(kwargs["json"]["state"], "What is MCP?")
+
+    async def test_any_score_at_threshold_blocks(self):
+        for field in ("harmful", "jailbreak", "out_of_scope"):
+            self.post.return_value = make_response(scores(**{field: 0.5}))
+            self.assertFalse(await self.guard.ais_safe("x"), field)
+
+    async def test_failures_fail_open(self):
+        self.post.side_effect = httpx.ConnectError("down")
+        self.assertTrue(await self.guard.ais_safe("x"))
+        self.post.side_effect = None
+        answers = scores()
+        answers["harmful"] = {"type": "refusal"}
+        self.post.return_value = make_response(answers)
+        self.assertTrue(await self.guard.ais_safe("x"))
+
+    async def test_client_is_shared_and_closed(self):
+        self.post.return_value = make_response(scores())
+        await self.guard.ais_safe("a")
+        client = self.guard._async_client
+        await self.guard.ais_safe("b")
+        self.assertIs(self.guard._async_client, client)
+        await self.guard.aclose()
+        self.assertTrue(client is not None and client.is_closed)
+        self.assertIsNone(self.guard._async_client)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import logging
 import os
+from collections.abc import AsyncGenerator
 from typing import NamedTuple
 
 from ai_generator import AIGenerator
@@ -201,6 +202,46 @@ class RAGSystem:
 
         # Return response with sources from tool searches
         return QueryResult(response, sources)
+
+    @traceable(name="rag_query", run_type="chain")
+    async def aquery_stream(
+        self, query: str, session_id: str | None = None
+    ) -> AsyncGenerator[str | QueryResult]:
+        """Async twin of query(): yields answer text deltas (str) as they are produced.
+
+        The last item is always the final QueryResult. The exchange is saved to the session
+        history only after the answer is complete; a blocked message yields the refusal as
+        one delta and is not saved. Errors (e.g. LLMRateLimitError) propagate to the caller.
+        The input guard and the LLM are awaited (async httpx / astream).
+        """
+        history = None
+        if session_id:
+            history = self.session_manager.get_conversation_history(session_id)
+
+        if self.input_guard and not await self.input_guard.ais_safe(query, history):
+            _annotate_run(blocked=True)
+            yield InputGuard.BLOCKED_MESSAGE
+            yield QueryResult(InputGuard.BLOCKED_MESSAGE, [], blocked=True)
+            return
+        _annotate_run(blocked=False, model=self.config.LLM_MODEL)
+
+        prompt = f"""Answer this question about course materials: {query}"""
+        sources: list[Source] = []
+        parts: list[str] = []
+        async for delta in self.ai_generator.astream_response(
+            query=prompt,
+            conversation_history=history,
+            tools=self.tool_manager.get_tool_definitions(),
+            tool_manager=self.tool_manager,
+            sources_out=sources,
+        ):
+            parts.append(delta)
+            yield delta
+        answer = "".join(parts)
+
+        if session_id:
+            self.session_manager.add_exchange(session_id, query, answer)
+        yield QueryResult(answer, sources)
 
     def get_course_analytics(self) -> dict:
         """Get analytics about the course catalog"""

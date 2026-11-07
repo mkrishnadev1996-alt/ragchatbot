@@ -57,6 +57,7 @@ class InputGuard:
         self.url = url
         self.model = model
         self.threshold = threshold
+        self._async_client: httpx.AsyncClient | None = None
 
     # How much of the conversation the guard sees, to resolve follow-ups like "and lesson 3?"
     HISTORY_MESSAGES = 4
@@ -88,14 +89,24 @@ class InputGuard:
         }
         return {"model": self.model, "state": self._state(query, history), "questions": questions}
 
-    def _scores(self, query: str, history: list[dict[str, str]] | None = None) -> dict[str, float]:
-        """Call the Decisions API and return P(true) for each behavior"""
-        response = httpx.post(
-            self.url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=self._request_body(query, history),
-            timeout=self.timeout,
-        )
+    @property
+    def _client(self) -> httpx.AsyncClient:
+        """The shared async HTTP client (connection pool), created on first use"""
+        if self._async_client is None:
+            self._async_client = httpx.AsyncClient(timeout=self.timeout)
+        return self._async_client
+
+    async def aclose(self) -> None:
+        """Close the shared async client; call once on application shutdown"""
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    def _parse_scores(self, response: httpx.Response) -> dict[str, float]:
+        """Check the Decisions API response and return P(true) for each behavior"""
         response.raise_for_status()
         answers = response.json()["answers"]
 
@@ -107,18 +118,34 @@ class InputGuard:
             scores[qid] = float(answer["noul"])
         return scores
 
-    @traceable(name="input_guard", run_type="tool")
-    def is_safe(self, query: str, history: list[dict[str, str]] | None = None) -> bool:
-        """Return True if the query may proceed to the normal flow"""
-        try:
-            scores = self._scores(query, history)
-        except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            logger.exception("Input guard call failed (model=%s); allowing query", self.model)
-            run = get_current_run_tree()
-            if run is not None:
-                run.metadata["guard_failed_open"] = True
-            return True
+    def _scores(self, query: str, history: list[dict[str, str]] | None = None) -> dict[str, float]:
+        """Call the Decisions API (blocking) and return P(true) for each behavior"""
+        response = httpx.post(
+            self.url,
+            headers=self._headers(),
+            json=self._request_body(query, history),
+            timeout=self.timeout,
+        )
+        return self._parse_scores(response)
 
+    async def _ascores(
+        self, query: str, history: list[dict[str, str]] | None = None
+    ) -> dict[str, float]:
+        """Call the Decisions API on the shared async client"""
+        response = await self._client.post(
+            self.url, headers=self._headers(), json=self._request_body(query, history)
+        )
+        return self._parse_scores(response)
+
+    def _fail_open(self) -> bool:
+        logger.exception("Input guard call failed (model=%s); allowing query", self.model)
+        run = get_current_run_tree()
+        if run is not None:
+            run.metadata["guard_failed_open"] = True
+        return True
+
+    def _verdict(self, scores: dict[str, float]) -> bool:
+        """True if no behavior score reaches the threshold"""
         run = get_current_run_tree()
         if run is not None:
             run.metadata.update({"guard_scores": scores, "guard_threshold": self.threshold})
@@ -128,3 +155,21 @@ class InputGuard:
             return False
         logger.debug("Input guard passed a query (scores=%s)", scores)
         return True
+
+    @traceable(name="input_guard", run_type="tool")
+    def is_safe(self, query: str, history: list[dict[str, str]] | None = None) -> bool:
+        """Return True if the query may proceed to the normal flow (blocking)"""
+        try:
+            scores = self._scores(query, history)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return self._fail_open()
+        return self._verdict(scores)
+
+    @traceable(name="input_guard", run_type="tool")
+    async def ais_safe(self, query: str, history: list[dict[str, str]] | None = None) -> bool:
+        """Async twin of is_safe: same checks and fail-open behavior, non-blocking"""
+        try:
+            scores = await self._ascores(query, history)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return self._fail_open()
+        return self._verdict(scores)

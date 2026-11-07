@@ -255,8 +255,9 @@ async function sendMessage() {
     chatMessages.appendChild(loadingMessage);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 
+    let text = '';  // answer streamed so far
     try {
-        const response = await authFetch(`${API_URL}/query`, {
+        const response = await authFetch(`${API_URL}/query/stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -286,20 +287,50 @@ async function sendMessage() {
             throw new Error(message);
         }
 
-        const data = await response.json();
-        
-        // Update session ID if new
-        if (!currentSessionId) {
-            setSessionId(data.session_id);
-        }
+        // The loading bubble turns into the answer on the first token and is re-rendered as
+        // markdown (sanitized) while text arrives; it is replaced by the final message on "done".
+        let contentEl = null;
+        let renderQueued = false;
+        let finished = false;
+        const render = () => {
+            renderQueued = false;
+            contentEl.innerHTML = renderMarkdown(text);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        };
 
-        // Replace loading message with response
-        loadingMessage.remove();
-        addMessage(data.answer, 'assistant', data.sources, false, data.message_id);
+        await readEventStream(response, (event) => {
+            if (event.type === 'delta') {
+                text += event.text;
+                if (!contentEl) {
+                    loadingMessage.innerHTML = '<div class="message-content"></div>';
+                    contentEl = loadingMessage.firstElementChild;
+                }
+                if (!renderQueued) {
+                    renderQueued = true;
+                    requestAnimationFrame(render);
+                }
+            } else if (event.type === 'done') {
+                finished = true;
+                if (!currentSessionId) setSessionId(event.session_id);
+                loadingMessage.replaceWith(
+                    buildMessage(event.answer, 'assistant', event.sources, false, event.message_id)
+                );
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } else if (event.type === 'error') {
+                throw new Error(event.detail || 'Query failed');
+            }
+        });
+        if (!finished) throw new Error('The connection was interrupted.');
 
     } catch (error) {
-        // Replace loading message with error
-        loadingMessage.remove();
+        // Keep whatever text already streamed, then show the error
+        if (loadingMessage.querySelector('.loading') || !loadingMessage.isConnected) {
+            loadingMessage.remove();
+        } else {
+            loadingMessage.classList.add('interrupted');
+            const content = loadingMessage.querySelector('.message-content');
+            content.innerHTML = renderMarkdown(text);
+        }
         addMessage(`Error: ${error.message}`, 'assistant');
     } finally {
         setSending(false);
@@ -324,10 +355,18 @@ function createLoadingMessage() {
 
 function addMessage(content, type, sources = null, isWelcome = false, feedbackId = null, rating = null) {
     const messageId = Date.now();
+    const messageDiv = buildMessage(content, type, sources, isWelcome, feedbackId, rating);
+    messageDiv.id = `message-${messageId}`;
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    return messageId;
+}
+
+function buildMessage(content, type, sources = null, isWelcome = false, feedbackId = null, rating = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}${isWelcome ? ' welcome-message' : ''}`;
-    messageDiv.id = `message-${messageId}`;
-    
+
     // Convert markdown to HTML for assistant messages
     const displayContent = type === 'assistant' ? renderMarkdown(content) : escapeHtml(content);
     
@@ -344,10 +383,26 @@ function addMessage(content, type, sources = null, isWelcome = false, feedbackId
     
     messageDiv.innerHTML = html;
     if (feedbackId) messageDiv.appendChild(createFeedbackControls(feedbackId, currentSessionId, rating));
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return messageDiv;
+}
 
-    return messageId;
+// Reads the server-sent events of /api/query/stream and calls onEvent for each JSON payload
+async function readEventStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        let end;
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            const line = frame.split('\n').find(l => l.startsWith('data: '));
+            if (line) onEvent(JSON.parse(line.slice(6)));
+        }
+        if (done) break;
+    }
 }
 
 // Thumbs up/down under an answer. Clicking the active thumb again clears the rating.
