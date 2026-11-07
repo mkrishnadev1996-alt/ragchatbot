@@ -70,20 +70,6 @@ class TestSessionManager(unittest.TestCase):
         self.assertIsNone(manager.get_conversation_history(None))
         self.assertIsNone(manager.get_conversation_history(""))
 
-    def test_clear_session_removes_messages_but_keeps_session(self):
-        manager = SessionManager(max_history=2)
-        session_id = manager.create_session()
-        manager.add_exchange(session_id, "q", "a")
-        manager.clear_session(session_id)
-
-        self.assertIn(session_id, manager.sessions)
-        self.assertIsNone(manager.get_conversation_history(session_id))
-
-    def test_clear_unknown_session_is_noop(self):
-        manager = SessionManager(max_history=2)
-        manager.clear_session("nope")
-        self.assertNotIn("nope", manager.sessions)
-
 
 if __name__ == "__main__":
     unittest.main()

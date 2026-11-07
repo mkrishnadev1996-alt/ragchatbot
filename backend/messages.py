@@ -5,6 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends
 from message_store import MessageStore
+from models import Source
 from pydantic import BaseModel
 from user_store import User
 
@@ -12,7 +13,7 @@ from user_store import User
 class StoredMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
-    sources: list[str]
+    sources: list[Source]
     message_id: str | None
     rating: Literal["up", "down"] | None
 

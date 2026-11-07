@@ -6,7 +6,7 @@ from ai_generator import AIGenerator
 from document_processor import DocumentProcessor
 from input_guard import InputGuard
 from langsmith import get_current_run_tree, traceable
-from models import Course
+from models import Course, Source
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import SessionManager
 from vector_store import VectorStore
@@ -25,7 +25,7 @@ class QueryResult(NamedTuple):
     """Outcome of RAGSystem.query"""
 
     answer: str
-    sources: list[str]
+    sources: list[Source]
     blocked: bool = False  # True when the input guard refused the message
 
 
@@ -101,25 +101,6 @@ class RAGSystem:
                 logger.exception("Rollback of course %r failed", course.title)
             raise
         return True
-
-    def add_course_document(self, file_path: str) -> tuple[Course | None, int]:
-        """
-        Add a single course document to the knowledge base.
-
-        Args:
-            file_path: Path to the course document
-
-        Returns:
-            Tuple of (Course object, number of chunks created)
-        """
-        try:
-            course, course_chunks = self.document_processor.process_course_document(file_path)
-            if not self._ingest(course, course_chunks):
-                return None, 0
-            return course, len(course_chunks)
-        except Exception:
-            logger.exception("Error processing course document %s", file_path)
-            return None, 0
 
     def add_course_folder(self, folder_path: str, clear_existing: bool = False) -> tuple[int, int]:
         """
@@ -205,7 +186,7 @@ class RAGSystem:
         prompt = f"""Answer this question about course materials: {query}"""
 
         # Sources are collected in a per-request list, so concurrent requests stay isolated
-        sources: list[str] = []
+        sources: list[Source] = []
         response = self.ai_generator.generate_response(
             query=prompt,
             conversation_history=history,

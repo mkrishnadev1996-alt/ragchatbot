@@ -4,6 +4,7 @@ from typing import Any
 import openai
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
+from models import Source
 from utils.http_utils import parse_retry_after
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ Provide only the direct answer to what was asked.
         conversation_history: list[dict[str, str]] | None = None,
         tools: list | None = None,
         tool_manager=None,
-        sources_out: list[str] | None = None,
+        sources_out: list[Source] | None = None,
     ) -> str:
         """
         Generate AI response with optional tool usage and conversation context.
@@ -128,7 +129,7 @@ Provide only the direct answer to what was asked.
         response: AIMessage,
         messages: list[BaseMessage],
         tool_manager,
-        sources_out: list[str] | None = None,
+        sources_out: list[Source] | None = None,
     ):
         """
         Handle execution of tool calls and get follow-up response.

@@ -224,7 +224,18 @@ function setupEventListeners() {
 
 
 // Chat Functions
+let sending = false;
+
+// Typing input, send button and suggested-question buttons are all locked while a request runs
+function setSending(active) {
+    sending = active;
+    chatInput.disabled = active;
+    sendButton.disabled = active;
+    document.querySelectorAll('.suggested-item').forEach(b => { b.disabled = active; });
+}
+
 async function sendMessage() {
+    if (sending) return;
     const query = chatInput.value.trim();
     if (!query) return;
     if (maxQueryLength && query.length > maxQueryLength) {
@@ -234,8 +245,7 @@ async function sendMessage() {
 
     // Disable input
     chatInput.value = '';
-    chatInput.disabled = true;
-    sendButton.disabled = true;
+    setSending(true);
 
     // Add user message
     addMessage(query, 'user');
@@ -292,8 +302,7 @@ async function sendMessage() {
         loadingMessage.remove();
         addMessage(`Error: ${error.message}`, 'assistant');
     } finally {
-        chatInput.disabled = false;
-        sendButton.disabled = false;
+        setSending(false);
         chatInput.focus();
     }
 }
@@ -398,23 +407,40 @@ function createFeedbackControls(feedbackId, sessionId, initialRating = null) {
     return bar;
 }
 
-// Group sources ("Course - Lesson N") by course, dedupe, and render as chips
+// Only http(s) links are rendered as links; anything else (javascript:, data:) stays plain text
+function safeUrl(url) {
+    return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null;
+}
+
+function linkOrText(text, url, cls) {
+    const href = safeUrl(url);
+    return href
+        ? `<a class="${cls}" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`
+        : `<span class="${cls}">${escapeHtml(text)}</span>`;
+}
+
+// Group sources ("Course - Lesson N") by course, dedupe, and render as chips.
+// A source is {label, url}; older saved messages hold plain label strings.
 function renderSources(sources) {
     const groups = new Map();
     for (const source of sources) {
-        const idx = source.lastIndexOf(' - Lesson ');
-        const course = idx === -1 ? source : source.slice(0, idx);
-        const lesson = idx === -1 ? null : source.slice(idx + 3);
-        if (!groups.has(course)) groups.set(course, new Set());
-        if (lesson) groups.get(course).add(lesson);
+        const label = typeof source === 'string' ? source : source.label;
+        const url = typeof source === 'string' ? null : source.url;
+        const idx = label.lastIndexOf(' - Lesson ');
+        const course = idx === -1 ? label : label.slice(0, idx);
+        const lesson = idx === -1 ? null : label.slice(idx + 3);
+        if (!groups.has(course)) groups.set(course, { url: null, lessons: new Map() });
+        const group = groups.get(course);
+        if (lesson) group.lessons.set(lesson, url);
+        else group.url = url;
     }
-    return Array.from(groups, ([course, lessons]) => {
-        const chips = Array.from(lessons)
-            .sort((a, b) => parseInt(a.replace(/\D/g, '')) - parseInt(b.replace(/\D/g, '')))
-            .map(l => `<span class="source-chip">${escapeHtml(l)}</span>`)
+    return Array.from(groups, ([course, group]) => {
+        const chips = Array.from(group.lessons)
+            .sort((a, b) => parseInt(a[0].replace(/\D/g, '')) - parseInt(b[0].replace(/\D/g, '')))
+            .map(([l, url]) => linkOrText(l, url, 'source-chip'))
             .join('');
         return `<div class="source-group">
-            <div class="source-course">${escapeHtml(course)}</div>
+            <div class="source-course">${linkOrText(course, group.url, 'source-course-link')}</div>
             ${chips ? `<div class="source-lessons">${chips}</div>` : ''}
         </div>`;
     }).join('');

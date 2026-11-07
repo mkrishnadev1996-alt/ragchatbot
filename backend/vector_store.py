@@ -252,25 +252,6 @@ class VectorStore:
         """Get the total number of courses in the vector store (raises on a read failure)"""
         return len(self.get_existing_course_titles())
 
-    def get_all_courses_metadata(self) -> list[dict[str, Any]]:
-        """Get metadata for all courses in the vector store"""
-        try:
-            results = self.course_catalog.get()
-            if results and "metadatas" in results:
-                # Parse lessons JSON for each course
-                parsed_metadata = []
-                for metadata in results["metadatas"]:
-                    course_meta = metadata.copy()
-                    if "lessons_json" in course_meta:
-                        course_meta["lessons"] = json.loads(course_meta["lessons_json"])
-                        del course_meta["lessons_json"]  # Remove the JSON string version
-                    parsed_metadata.append(course_meta)
-                return parsed_metadata
-            return []
-        except Exception:
-            logger.exception("Error getting courses metadata")
-            return []
-
     def get_course_link(self, course_title: str) -> str | None:
         """Get course link for a given course title"""
         try:
