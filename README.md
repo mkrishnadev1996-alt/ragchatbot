@@ -99,7 +99,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy backend
 ```
 
-The store tests also run against PostgreSQL when `TEST_DATABASE_URL=postgresql://user:pass@host/db` is set; CI does this.
+The store and vector-store tests also run against PostgreSQL when `TEST_DATABASE_URL=postgresql://user:pass@host/db` is set (CI does this); use a throwaway database and a server with the pgvector extension, e.g. the `pgvector/pgvector:pg17` image. Without pgvector the vector-store tests are skipped.
 
 ## Production
 
@@ -109,6 +109,10 @@ By default the app keeps its state inside one process (SQLite file, in-memory se
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL (`postgresql://user:pass@host:5432/db`) for users, feedback and messages instead of the SQLite file. `DATABASE_POOL_SIZE` (default 10) sets the connection pool. Existing SQLite data is not copied over. |
 | `REDIS_URL` | Redis (`redis://host:6379/0`) for conversation sessions and rate limits, so they are shared and survive restarts. |
+| `VECTOR_BACKEND` | `pgvector` stores the course vectors in the same PostgreSQL (needs `DATABASE_URL` and the pgvector extension, e.g. the `pgvector/pgvector:pg17` image) instead of the embedded ChromaDB, so several app processes can share them. Run `python ingest.py --clear` after switching. |
+| `HYBRID_SEARCH` | pgvector only, default `true`: combine vector and keyword search, which helps with exact names and rare terms. `KEYWORD_MAX_DOC_FRACTION` (default `0.05`) makes the keyword side ignore words that appear in more than that share of chunks. |
+| `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` | `local` (default, `all-MiniLM-L6-v2` in the process) or `openai` (any OpenAI-compatible embeddings endpoint: also set `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY` and `EMBEDDING_DIMENSIONS`; pgvector only). Changing the model needs `python ingest.py --clear`; the app refuses to search an index built with a different model. |
+| `MAX_TOOL_ROUNDS` | How many times the model may search per question (default `3`). It searches as often as it needs, e.g. to compare two courses; this is only a cost guard. `1` gives the old single search. |
 | `INGEST_ON_STARTUP` | `false` stops the server from indexing the course documents when it starts; run `cd backend && uv run python ingest.py` (add `--clear` to rebuild) instead. |
 | `ENABLE_API_DOCS` | `false` hides `/docs`, `/redoc` and `/openapi.json`. |
 | `ENABLE_HSTS` | `true` adds the Strict-Transport-Security header (only when served over HTTPS). |
@@ -127,7 +131,9 @@ See `.env.example` for the full list.
 docker compose up --build
 ```
 
-This starts PostgreSQL, Redis, a one-off `ingest` job that indexes `docs/`, and the app on port 8000, with data kept in Docker volumes. Re-index after adding courses with `docker compose run --rm ingest python ingest.py`. Put a TLS-terminating reverse proxy in front, and set `FORWARDED_ALLOW_IPS` to its address so per-IP rate limits see real client IPs. The image has not been size-optimised: on Linux `sentence-transformers` pulls the CUDA build of PyTorch.
+This starts PostgreSQL (with pgvector, holding users, messages and the course vectors), Redis, a one-off `ingest` job that indexes `docs/`, and the app on port 8000, with data kept in Docker volumes. Re-index after adding courses with `docker compose run --rm ingest python ingest.py`. Put a TLS-terminating reverse proxy in front, and set `FORWARDED_ALLOW_IPS` to its address so per-IP rate limits see real client IPs. The image has not been size-optimised: on Linux `sentence-transformers` pulls the CUDA build of PyTorch.
 
-**Limits to know about:** the vector store is still embedded ChromaDB on a local volume, so run a single app container. The input guard fails open when its (free, alpha) service errors or rate limits, so treat it as best-effort.
+**Scaling out:** with this stack all state is outside the app container (PostgreSQL, Redis), so you can run several app containers behind a load balancer (`docker compose up --scale app=3` after removing the fixed `ports:` mapping). Each container still loads the local embedding model unless you switch `EMBEDDING_PROVIDER`.
+
+**Limits to know about:** with the default `VECTOR_BACKEND=chroma` the vector store is embedded and single-process; hybrid search needs `pgvector`. The input guard fails open when its (free, alpha) service errors or rate limits, so treat it as best-effort.
 

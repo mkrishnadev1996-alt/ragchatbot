@@ -120,7 +120,9 @@ class _PgConnection:
     def close(self) -> None:
         conn, self._conn = self._conn, None
         if conn is not None:  # closing twice is harmless
-            self._pool.putconn(conn)  # the pool rolls back anything left open
+            conn.rollback()  # ends the implicit transaction a read-only query opens (else the
+            # pool logs a warning on every return); a no-op after commit
+            self._pool.putconn(conn)
 
 
 class PostgresDatabase(Database):

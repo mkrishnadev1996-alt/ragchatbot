@@ -6,12 +6,16 @@ from typing import NamedTuple
 
 from ai_generator import AIGenerator
 from document_processor import DocumentProcessor
+from embeddings import create_embedder
 from input_guard import InputGuard
 from langsmith import get_current_run_tree, traceable
 from models import Course, Source
+from pg_vector_store import PgVectorStore
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import RedisSessionManager, SessionManager
+from utils.db import Database
 from utils.redis_client import get_redis
+from vector_backend import VectorStoreBackend
 from vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -35,17 +39,12 @@ class QueryResult(NamedTuple):
 class RAGSystem:
     """Main orchestrator for the Retrieval-Augmented Generation system"""
 
-    def __init__(self, config):
+    def __init__(self, config, database: Database | None = None):
         self.config = config
 
         # Initialize core components
         self.document_processor = DocumentProcessor(config.CHUNK_SIZE, config.CHUNK_OVERLAP)
-        self.vector_store = VectorStore(
-            config.CHROMA_PATH,
-            config.EMBEDDING_MODEL,
-            config.MAX_RESULTS,
-            max_course_distance=getattr(config, "COURSE_MATCH_MAX_DISTANCE", None),
-        )
+        self.vector_store = self._create_vector_store(config, database)
         self.ai_generator = AIGenerator(
             config.LLM_API_KEY,
             config.LLM_BASE_URL,
@@ -54,6 +53,7 @@ class RAGSystem:
             temperature=config.LLM_TEMPERATURE,
             max_retries=config.LLM_MAX_RETRIES,
             timeout=getattr(config, "LLM_TIMEOUT", 60),
+            max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 3),
         )
         ttl_seconds = getattr(config, "SESSION_TTL_SECONDS", 0)
         max_sessions = getattr(config, "MAX_SESSIONS", 0)
@@ -173,6 +173,35 @@ class RAGSystem:
                     logger.exception("Error processing %s", file_name)
 
         return total_courses, total_chunks
+
+    @staticmethod
+    def _create_vector_store(config, database: Database | None) -> VectorStoreBackend:
+        """The backend chosen by VECTOR_BACKEND (pgvector needs the shared PostgreSQL)."""
+        backend = getattr(config, "VECTOR_BACKEND", "chroma")
+        max_distance = getattr(config, "COURSE_MATCH_MAX_DISTANCE", None)
+        if backend == "pgvector":
+            if database is None or database.dialect != "postgres":
+                raise RuntimeError(
+                    "VECTOR_BACKEND=pgvector needs DATABASE_URL (PostgreSQL with pgvector)"
+                )
+            return PgVectorStore(
+                database,
+                create_embedder(config),
+                config.MAX_RESULTS,
+                max_course_distance=max_distance,
+                hybrid=getattr(config, "HYBRID_SEARCH", True),
+                keyword_max_doc_fraction=getattr(config, "KEYWORD_MAX_DOC_FRACTION", 0.05),
+            )
+        if backend != "chroma":
+            raise ValueError(f"Unknown VECTOR_BACKEND {backend!r} (use 'chroma' or 'pgvector')")
+        if getattr(config, "EMBEDDING_PROVIDER", "local") != "local":
+            raise ValueError("EMBEDDING_PROVIDER other than 'local' needs VECTOR_BACKEND=pgvector")
+        return VectorStore(
+            config.CHROMA_PATH,
+            config.EMBEDDING_MODEL,
+            config.MAX_RESULTS,
+            max_course_distance=max_distance,
+        )
 
     @traceable(name="rag_query", run_type="chain")
     def query(self, query: str, session_id: str | None = None) -> QueryResult:
