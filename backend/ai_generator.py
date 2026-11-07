@@ -1,4 +1,7 @@
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from typing import Any
 
 import openai
@@ -105,13 +108,7 @@ Provide only the direct answer to what was asked.
         Returns:
             Generated response as string
         """
-        messages: list[BaseMessage] = [SystemMessage(content=self.SYSTEM_PROMPT)]
-        for item in conversation_history or []:
-            if item["role"] == "assistant":
-                messages.append(AIMessage(content=item["content"]))
-            else:
-                messages.append(HumanMessage(content=item["content"]))
-        messages.append(HumanMessage(content=query))
+        messages = self._build_messages(query, conversation_history)
 
         # Bind tools if available; otherwise call the plain model
         runnable = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
@@ -123,6 +120,56 @@ Provide only the direct answer to what was asked.
 
         # Return direct response
         return self._text(response)
+
+    async def astream_response(
+        self,
+        query: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        tools: list | None = None,
+        tool_manager=None,
+        sources_out: list[Source] | None = None,
+    ) -> AsyncIterator[str]:
+        """Async twin of generate_response: yields the answer text as it is produced.
+
+        Same one-tool-round limit: the first call may request tools (their results are
+        appended to sources_out), the follow-up call streams the final text. The LLM calls
+        are natively async (`astream`); the blocking tool execution (ChromaDB) runs in a
+        worker thread so the event loop stays free. A truncation notice is yielded last if
+        the provider stopped at max_tokens. LLMRateLimitError is raised from the first
+        `anext()` when the provider rejects the initial request.
+        """
+        messages = self._build_messages(query, conversation_history)
+        runnable = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+
+        first: list[AIMessage] = []
+        async for delta in self._astream(runnable, messages, first):
+            yield delta
+        final = first[0]
+
+        if final.tool_calls and tool_manager:
+            follow_up = await asyncio.to_thread(
+                self._run_tools, final, messages, tool_manager, sources_out
+            )
+            second: list[AIMessage] = []
+            async for delta in self._astream(self.llm, follow_up, second):
+                yield delta
+            final = second[0]
+
+        notice = self._truncation_notice(final)
+        if notice:
+            yield notice
+
+    def _build_messages(
+        self, query: str, conversation_history: list[dict[str, str]] | None
+    ) -> list[BaseMessage]:
+        messages: list[BaseMessage] = [SystemMessage(content=self.SYSTEM_PROMPT)]
+        for item in conversation_history or []:
+            if item["role"] == "assistant":
+                messages.append(AIMessage(content=item["content"]))
+            else:
+                messages.append(HumanMessage(content=item["content"]))
+        messages.append(HumanMessage(content=query))
+        return messages
 
     def _handle_tool_execution(
         self,
@@ -143,6 +190,20 @@ Provide only the direct answer to what was asked.
         Returns:
             Final response text after tool execution
         """
+        follow_up = self._run_tools(response, messages, tool_manager, sources_out)
+
+        # Final call on the unbound model: no tools, so this is the last round
+        final_response = self._invoke(self.llm, follow_up)
+        return self._text(final_response)
+
+    def _run_tools(
+        self,
+        response: AIMessage,
+        messages: list[BaseMessage],
+        tool_manager,
+        sources_out: list[Source] | None = None,
+    ) -> list[BaseMessage]:
+        """Execute the tool calls in response; return the messages for the follow-up call"""
         follow_up: list[BaseMessage] = [*messages, response]
 
         # Execute all tool calls and append each result as its own ToolMessage
@@ -163,23 +224,24 @@ Provide only the direct answer to what was asked.
                 text = f"Error: the {name} tool failed ({type(e).__name__}). Answer without it."
             logger.debug("Tool %s returned %d chars", name, len(text))
             follow_up.append(ToolMessage(content=text, tool_call_id=tool_call["id"] or ""))
+        return follow_up
 
-        # Final call on the unbound model: no tools, so this is the last round
-        final_response = self._invoke(self.llm, follow_up)
-        return self._text(final_response)
+    def _truncation_notice(self, response: AIMessage) -> str:
+        """The notice to show if the provider stopped at max_tokens, else an empty string"""
+        if response.response_metadata.get("finish_reason") == "length":
+            logger.warning("LLM answer truncated at max_tokens (model=%s)", self.model)
+            return self.TRUNCATION_NOTICE
+        return ""
 
     def _text(self, response: AIMessage) -> str:
         """The answer text, with a visible notice if the provider stopped at max_tokens"""
-        if response.response_metadata.get("finish_reason") == "length":
-            logger.warning("LLM answer truncated at max_tokens (model=%s)", self.model)
-            return response.text + self.TRUNCATION_NOTICE
-        return response.text
+        return response.text + self._truncation_notice(response)
 
-    def _invoke(self, runnable: Any, messages: list[BaseMessage]) -> AIMessage:
-        """Invoke the model, translating provider rate limits into LLMRateLimitError"""
-        logger.debug("LLM request: model=%s messages=%d", self.model, len(messages))
+    @contextmanager
+    def _translate_errors(self):
+        """Translate provider rate limits into LLMRateLimitError and log API failures"""
         try:
-            return runnable.invoke(messages)
+            yield
         except openai.RateLimitError as e:
             headers = getattr(getattr(e, "response", None), "headers", None)
             retry_after = parse_retry_after(headers)
@@ -188,3 +250,26 @@ Provide only the direct answer to what was asked.
         except openai.APIError:
             logger.exception("LLM API request failed (model=%s)", self.model)
             raise
+
+    def _invoke(self, runnable: Any, messages: list[BaseMessage]) -> AIMessage:
+        """Invoke the model, translating provider rate limits into LLMRateLimitError"""
+        logger.debug("LLM request: model=%s messages=%d", self.model, len(messages))
+        with self._translate_errors():
+            return runnable.invoke(messages)
+
+    async def _astream(
+        self, runnable: Any, messages: list[BaseMessage], result: list[AIMessage]
+    ) -> AsyncIterator[str]:
+        """Stream the model asynchronously, yielding text deltas.
+
+        The aggregated message is appended to `result` once the stream ends (async generators
+        cannot return a value).
+        """
+        logger.debug("LLM stream request: model=%s messages=%d", self.model, len(messages))
+        aggregate: Any = None
+        with self._translate_errors():
+            async for chunk in runnable.astream(messages):
+                aggregate = chunk if aggregate is None else aggregate + chunk
+                if chunk.text:
+                    yield chunk.text
+        result.append(aggregate if aggregate is not None else AIMessage(content=""))

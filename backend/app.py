@@ -2,6 +2,8 @@ import warnings
 
 warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.*")
 
+import asyncio
+import json
 import logging
 import math
 import os
@@ -11,20 +13,23 @@ from contextlib import asynccontextmanager
 from ai_generator import LLMRateLimitError
 from auth import RateLimiter, create_auth
 from config import config
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from feedback import create_feedback_router
 from feedback_store import FeedbackStore
+from langsmith.run_helpers import LangSmithExtra
 from message_store import MessageStore
 from messages import create_messages_router
 from models import Source
 from pydantic import BaseModel, ConfigDict, Field
-from rag_system import RAGSystem
+from rag_system import QueryResult, RAGSystem
 from user_store import User, UserStore
 from utils.body_limit import BodySizeLimitMiddleware
 from utils.logging_config import setup_logging
+from utils.security_headers import SecurityHeadersMiddleware
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
 logger = logging.getLogger(__name__)
@@ -43,7 +48,12 @@ async def lifespan(_app: FastAPI):
             logger.exception("Error loading initial documents")
     else:
         logger.warning("Docs folder %s not found; skipping initial load", docs_path)
-    yield
+    try:
+        yield
+    finally:
+        # Close the input guard's shared async HTTP client
+        if rag_system.input_guard:
+            await rag_system.input_guard.aclose()
 
 
 # Initialize FastAPI app
@@ -82,15 +92,12 @@ SECURITY_HEADERS = {
 }
 
 
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    for name, value in SECURITY_HEADERS.items():
-        # Swagger UI (/docs, /redoc) loads scripts from a CDN, so the strict CSP would break it
-        if name == "Content-Security-Policy" and request.url.path in ("/docs", "/redoc"):
-            continue
-        response.headers.setdefault(name, value)
-    return response
+# Pure ASGI (not @app.middleware("http")) so streamed responses aren't wrapped and client
+# disconnects reach the streaming endpoint. Swagger UI (/docs, /redoc) loads scripts from a
+# CDN, so the strict CSP would break it there.
+app.add_middleware(
+    SecurityHeadersMiddleware, headers=SECURITY_HEADERS, skip_csp_paths=("/docs", "/redoc")
+)
 
 
 # Initialize RAG system
@@ -168,40 +175,60 @@ def _internal_error(what: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=f"Internal server error (reference: {error_id})")
 
 
+def _open_session(request: QueryRequest, user: User) -> str:
+    """The request's session id (created if missing); 404 for an unknown or foreign session"""
+    session_id = request.session_id
+    if not session_id:
+        return rag_system.session_manager.create_session(user.id)
+    if not rag_system.session_manager.is_owner(session_id, user.id):
+        # Unknown and foreign sessions look the same, so ids can't be probed
+        logger.warning("Session access denied (user=%s, session=%s)", user.id, session_id)
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session_id
+
+
+def _langsmith_extra(user: User, session_id: str) -> LangSmithExtra:
+    return {"metadata": {"user_id": user.id, "session_id": session_id}, "tags": ["api"]}
+
+
+def _save_exchange(user: User, session_id: str, question: str, result: QueryResult) -> str:
+    """Persist a finished exchange (unless blocked); returns its message id"""
+    message_id = uuid.uuid4().hex
+    if not result.blocked:  # refused messages are not kept or replayed
+        try:
+            message_store.add_exchange(
+                user.id, session_id, question, result.answer, result.sources, message_id
+            )
+        except Exception:
+            # Losing history is better than failing an answer we already generated
+            logger.exception("Failed to persist exchange (session=%s)", session_id)
+    return message_id
+
+
+def _to_http_error(exc: Exception) -> HTTPException:
+    """Map an error raised while answering to the HTTP error the client should see"""
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, LLMRateLimitError):
+        logger.warning("Returning 429 to client: LLM rate limit (retry_after=%s)", exc.retry_after)
+        headers = None
+        if exc.retry_after is not None:
+            headers = {"Retry-After": str(max(1, math.ceil(exc.retry_after)))}
+        return HTTPException(status_code=429, detail=str(exc), headers=headers)
+    return _internal_error("Query failed", exc)
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
     """Process a query and return response with sources"""
     try:
-        # Create session if not provided
-        session_id = request.session_id
-        if not session_id:
-            session_id = rag_system.session_manager.create_session(user.id)
-        elif not rag_system.session_manager.is_owner(session_id, user.id):
-            # Unknown and foreign sessions look the same, so ids can't be probed
-            logger.warning("Session access denied (user=%s, session=%s)", user.id, session_id)
-            raise HTTPException(status_code=404, detail="Session not found")
-
+        session_id = _open_session(request, user)
         logger.info("Query received (session=%s, %d chars)", session_id, len(request.query))
 
-        # Process query using RAG system
         result = rag_system.query(
-            request.query,
-            session_id,
-            langsmith_extra={
-                "metadata": {"user_id": user.id, "session_id": session_id},
-                "tags": ["api"],
-            },
+            request.query, session_id, langsmith_extra=_langsmith_extra(user, session_id)
         )
-
-        message_id = uuid.uuid4().hex
-        if not result.blocked:  # refused messages are not kept or replayed
-            try:
-                message_store.add_exchange(
-                    user.id, session_id, request.query, result.answer, result.sources, message_id
-                )
-            except Exception:
-                # Losing history is better than failing an answer we already generated
-                logger.exception("Failed to persist exchange (session=%s)", session_id)
+        message_id = _save_exchange(user, session_id, request.query, result)
 
         return QueryResponse(
             answer=result.answer,
@@ -209,16 +236,73 @@ def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
             session_id=session_id,
             message_id=message_id,
         )
-    except HTTPException:
-        raise
-    except LLMRateLimitError as e:
-        logger.warning("Returning 429 to client: LLM rate limit (retry_after=%s)", e.retry_after)
-        headers = None
-        if e.retry_after is not None:
-            headers = {"Retry-After": str(max(1, math.ceil(e.retry_after)))}
-        raise HTTPException(status_code=429, detail=str(e), headers=headers) from e
     except Exception as e:
-        raise _internal_error("Query failed", e) from e
+        raise _to_http_error(e) from e
+
+
+def _sse(event: dict) -> bytes:
+    """One server-sent event frame carrying a JSON payload"""
+    return b"data: " + json.dumps(event, ensure_ascii=False).encode() + b"\n\n"
+
+
+@app.post("/api/query/stream")
+async def query_documents_stream(request: QueryRequest, user: User = Depends(limit_queries)):
+    """Like /api/query, but streams the answer as server-sent events.
+
+    Natively async: the LLM is awaited on the event loop and the blocking steps (input guard,
+    vector search, sqlite) are pushed to worker threads, so a slow answer holds no thread.
+
+    Events: {"type": "delta", "text"} while the answer is written, then one
+    {"type": "done", answer, sources, session_id, message_id}. Failures before the first
+    token (auth, bad session, rate limits, the LLM rejecting the request) are ordinary HTTP
+    errors; a failure after that is sent as {"type": "error", "detail"}.
+    """
+    events = None
+    try:
+        session_id = _open_session(request, user)
+        logger.info("Stream query received (session=%s, %d chars)", session_id, len(request.query))
+        events = rag_system.aquery_stream(
+            request.query, session_id, langsmith_extra=_langsmith_extra(user, session_id)
+        )
+        # Pull the first item now so an early failure becomes a real HTTP status
+        first = await anext(events, None)
+    except Exception as e:
+        if events is not None:
+            await events.aclose()
+        raise _to_http_error(e) from e
+
+    async def frames():
+        try:
+            item = first
+            while item is not None:
+                if isinstance(item, QueryResult):
+                    message_id = await asyncio.to_thread(
+                        _save_exchange, user, session_id, request.query, item
+                    )
+                    yield _sse(
+                        {
+                            "type": "done",
+                            "answer": item.answer,
+                            "sources": [s.model_dump() for s in item.sources],
+                            "session_id": session_id,
+                            "message_id": message_id,
+                        }
+                    )
+                else:
+                    yield _sse({"type": "delta", "text": item})
+                item = await anext(events, None)
+        except Exception as e:
+            err = _to_http_error(e)
+            yield _sse({"type": "error", "detail": err.detail, "status": err.status_code})
+        finally:
+            # Also runs when the client disconnects (the task is cancelled): stop the LLM call
+            await events.aclose()
+
+    return StreamingResponse(
+        frames(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/healthz")
