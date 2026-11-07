@@ -38,7 +38,7 @@ An optional input guard screens every question before it reaches the main LLM. I
    LLM_MODEL=llama-3.3-70b-versatile
    JWT_SECRET=a_long_random_string
    ```
-   `JWT_SECRET` signs login tokens and is required (generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`). Users register and log in from the web UI; accounts are stored in `backend/users.db` (SQLite) and the chat requires being logged in.
+   `JWT_SECRET` signs login tokens and is required (generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`). Users register and log in from the web UI; accounts are stored in `backend/users.db` (SQLite, or PostgreSQL if you set `DATABASE_URL`) and the chat requires being logged in.
    For Google Gemini instead, use `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/` and `LLM_MODEL=gemini-2.5-flash`. See `.env.example`.
 
    **Input guard (optional).** To enable it, also set:
@@ -56,12 +56,15 @@ Chat requires an account. Open the app, choose **Register** in the login dialog,
 | `POST /api/auth/register` | none | Create an account, returns `{token, user}` (409 if the email exists) |
 | `POST /api/auth/login` | none | Returns `{token, user}` (401 on bad credentials) |
 | `GET /api/auth/me` | bearer | Current user |
-| `POST /api/query` | bearer | Ask a question (401 without a valid token) |
+| `POST /api/query` | bearer | Ask a question (401 without a valid token, 429 when rate limited or over the daily quota) |
+| `POST /api/query/stream` | bearer | Same, streamed as server-sent events (what the web UI uses) |
 | `POST /api/feedback` | bearer | Thumbs up/down on an answer |
 | `GET /api/messages` | bearer | Your saved messages; optional `?session_id=` limits to one session |
 | `GET /api/courses` | none | Course catalog stats |
+| `GET /healthz` | none | Liveness probe |
+| `GET /readyz` | none | Readiness probe: 503 unless the vector store, database and (if configured) Redis respond |
 
-Send the token as `Authorization: Bearer <token>`. Login and register are rate-limited per IP.
+Send the token as `Authorization: Bearer <token>`. Login and register are rate-limited per IP, questions per user (`QUERY_RATE_LIMIT` per `QUERY_RATE_WINDOW`) and per day (`DAILY_QUERY_QUOTA`, default 500; `0` = unlimited).
 
 ## LangSmith Tracing (optional)
 
@@ -86,5 +89,45 @@ uv run uvicorn app:app --reload --port 8000
 
 The application will be available at:
 - Web Interface: `http://localhost:8000`
-- API Documentation: `http://localhost:8000/docs`
+- API Documentation: `http://localhost:8000/docs` (set `ENABLE_API_DOCS=false` to turn it off)
+
+## Development
+
+```bash
+uv run pytest            # unit tests (no network, LLM or model download)
+uv run ruff check . && uv run ruff format --check .
+uv run mypy backend
+```
+
+The store tests also run against PostgreSQL when `TEST_DATABASE_URL=postgresql://user:pass@host/db` is set; CI does this.
+
+## Production
+
+By default the app keeps its state inside one process (SQLite file, in-memory sessions and rate limits, startup ingestion), which is fine for development and a single small server. To run it more robustly, each piece can move out of the process; set the variable and leave it empty to keep the default:
+
+| Variable | Effect |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL (`postgresql://user:pass@host:5432/db`) for users, feedback and messages instead of the SQLite file. `DATABASE_POOL_SIZE` (default 10) sets the connection pool. Existing SQLite data is not copied over. |
+| `REDIS_URL` | Redis (`redis://host:6379/0`) for conversation sessions and rate limits, so they are shared and survive restarts. |
+| `INGEST_ON_STARTUP` | `false` stops the server from indexing the course documents when it starts; run `cd backend && uv run python ingest.py` (add `--clear` to rebuild) instead. |
+| `ENABLE_API_DOCS` | `false` hides `/docs`, `/redoc` and `/openapi.json`. |
+| `ENABLE_HSTS` | `true` adds the Strict-Transport-Security header (only when served over HTTPS). |
+| `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` | Comma-separated lists. Both default to `*`, and the server logs a warning at startup; set them explicitly in production. |
+| `DAILY_QUERY_QUOTA` | Questions per user per rolling 24 hours (default 500, `0` = unlimited). |
+| `MAX_HISTORY_CHARS` | Character budget for the chat history sent to the LLM (default 6000, `0` = unlimited). |
+| `MESSAGE_RETENTION_DAYS` | Delete stored messages older than this at startup (default `0` = keep forever). |
+| `CHROMA_PATH`, `DOCS_PATH`, `FRONTEND_PATH` | Locations of the vector store, the course documents and the web UI. |
+
+See `.env.example` for the full list.
+
+### Docker
+
+```bash
+# in .env, in addition to the usual variables: POSTGRES_PASSWORD=<choose one>
+docker compose up --build
+```
+
+This starts PostgreSQL, Redis, a one-off `ingest` job that indexes `docs/`, and the app on port 8000, with data kept in Docker volumes. Re-index after adding courses with `docker compose run --rm ingest python ingest.py`. Put a TLS-terminating reverse proxy in front, and set `FORWARDED_ALLOW_IPS` to its address so per-IP rate limits see real client IPs. The image has not been size-optimised: on Linux `sentence-transformers` pulls the CUDA build of PyTorch.
+
+**Limits to know about:** the vector store is still embedded ChromaDB on a local volume, so run a single app container. The input guard fails open when its (free, alpha) service errors or rate limits, so treat it as best-effort.
 

@@ -166,3 +166,73 @@ def test_oversized_body_is_413(env):
     _, client, _ = env
     res = client.post("/api/query", content=b"x" * (config.MAX_BODY_BYTES + 1))
     assert res.status_code == 413
+
+
+def test_readyz_ok_when_dependencies_work(env):
+    _, client, rag = env
+    rag.vector_store.get_course_count.return_value = 1
+    res = client.get("/readyz")
+    assert res.status_code == 200
+    assert res.json() == {
+        "status": "ready",
+        "checks": {"vector_store": "ok", "database": "ok"},
+    }
+
+
+def test_readyz_503_when_vector_store_fails(env):
+    _, client, rag = env
+    rag.vector_store.get_course_count.side_effect = RuntimeError("chroma down")
+    res = client.get("/readyz")
+    assert res.status_code == 503
+    assert res.json()["checks"] == {"vector_store": "failed", "database": "ok"}
+
+
+def test_startup_ingestion_can_be_disabled(env, monkeypatch):
+    app_module, _, rag = env
+    rag.input_guard = None
+    monkeypatch.setattr(config, "DOCS_PATH", BACKEND_DIR)  # any existing folder
+    monkeypatch.setattr(config, "INGEST_ON_STARTUP", False)
+    with TestClient(app_module.app):
+        pass
+    rag.add_course_folder.assert_not_called()
+    monkeypatch.setattr(config, "INGEST_ON_STARTUP", True)
+    rag.add_course_folder.return_value = (0, 0)
+    with TestClient(app_module.app):
+        pass
+    rag.add_course_folder.assert_called_once()
+
+
+def test_daily_quota_blocks_with_429(env, monkeypatch):
+    _, client, rag = env
+    monkeypatch.setattr(config, "DAILY_QUERY_QUOTA", 2)
+    headers = register(client)
+    assert ask(client, headers).status_code == 200
+    assert ask(client, headers).status_code == 200
+    res = ask(client, headers)
+    assert res.status_code == 429
+    assert res.headers["Retry-After"] == "3600"
+    assert rag.query.call_count == 2
+
+
+def test_daily_quota_is_per_user(env, monkeypatch):
+    _, client, _ = env
+    monkeypatch.setattr(config, "DAILY_QUERY_QUOTA", 1)
+    a = register(client, "a@example.com")
+    b = register(client, "b@example.com")
+    assert ask(client, a).status_code == 200
+    assert ask(client, a).status_code == 429
+    assert ask(client, b).status_code == 200
+
+
+def test_api_docs_can_be_disabled(env, monkeypatch):
+    app_module, client, _ = env
+    assert client.get("/openapi.json").status_code == 200  # default: enabled
+    monkeypatch.setattr(config, "ENABLE_API_DOCS", False)
+    monkeypatch.setattr(config, "ENABLE_HSTS", True)
+    sys.modules.pop("app", None)
+    with patch("rag_system.RAGSystem", return_value=MagicMock()):
+        off = importlib.import_module("app")
+    off_client = TestClient(off.app)
+    assert off_client.get("/openapi.json").status_code == 404
+    assert off_client.get("/docs").status_code == 404
+    assert "max-age=" in off_client.get("/healthz").headers["Strict-Transport-Security"]

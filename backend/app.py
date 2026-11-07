@@ -11,12 +11,12 @@ import uuid
 from contextlib import asynccontextmanager
 
 from ai_generator import LLMRateLimitError
-from auth import RateLimiter, create_auth
+from auth import RateLimiter, RedisRateLimiter, create_auth
 from config import config
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from feedback import create_feedback_router
 from feedback_store import FeedbackStore
@@ -28,7 +28,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_system import QueryResult, RAGSystem
 from user_store import User, UserStore
 from utils.body_limit import BodySizeLimitMiddleware
+from utils.db import open_database
 from utils.logging_config import setup_logging
+from utils.migrations import migrate
+from utils.redis_client import get_redis
 from utils.security_headers import SecurityHeadersMiddleware
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
@@ -38,8 +41,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Load the initial documents on startup"""
-    docs_path = "../docs"
-    if os.path.exists(docs_path):
+    if config.MESSAGE_RETENTION_DAYS:
+        try:
+            removed = message_store.purge_older_than(config.MESSAGE_RETENTION_DAYS)
+            logger.info(
+                "Purged %d messages older than %d days", removed, config.MESSAGE_RETENTION_DAYS
+            )
+        except Exception:
+            logger.exception("Message retention purge failed")
+    docs_path = config.DOCS_PATH
+    if not config.INGEST_ON_STARTUP:
+        logger.info("INGEST_ON_STARTUP is off; skipping document ingestion (run ingest.py)")
+    elif os.path.exists(docs_path):
         logger.info("Loading initial documents from %s", docs_path)
         try:
             courses, chunks = rag_system.add_course_folder(docs_path, clear_existing=False)
@@ -51,18 +64,34 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        # Close the input guard's shared async HTTP client
+        # Close the input guard's shared async HTTP client and the database pool
         if rag_system.input_guard:
             await rag_system.input_guard.aclose()
+        database.close()
 
 
 # Initialize FastAPI app
-app = FastAPI(title="Course Materials RAG System", root_path="", lifespan=lifespan)
+# Interactive docs and the schema are off when ENABLE_API_DOCS=false (production)
+app = FastAPI(
+    title="Course Materials RAG System",
+    root_path="",
+    lifespan=lifespan,
+    docs_url="/docs" if config.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if config.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if config.ENABLE_API_DOCS else None,
+)
 
 
 def _csv(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
+
+for _name, _value in (
+    ("ALLOWED_HOSTS", config.ALLOWED_HOSTS),
+    ("ALLOWED_ORIGINS", config.ALLOWED_ORIGINS),
+):
+    if "*" in _csv(_value):
+        logger.warning("%s is '*' (any); set it to explicit values in production", _name)
 
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.MAX_BODY_BYTES)
 
@@ -90,6 +119,8 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
 }
+if config.ENABLE_HSTS:
+    SECURITY_HEADERS["Strict-Transport-Security"] = f"max-age={config.HSTS_MAX_AGE}"
 
 
 # Pure ASGI (not @app.middleware("http")) so streamed responses aren't wrapped and client
@@ -104,23 +135,37 @@ app.add_middleware(
 rag_system = RAGSystem(config)
 
 # Authentication. The router must be included before the catch-all static mount below.
-user_store = UserStore(config.USERS_DB_PATH)
+database = open_database(config.DATABASE_URL, config.USERS_DB_PATH, config.DATABASE_POOL_SIZE)
+redis_client = get_redis(config.REDIS_URL) if config.REDIS_URL else None
+
+
+def make_limiter(name: str, max_attempts: int, window_seconds: int, **kwargs) -> RateLimiter:
+    """Rate limiter shared across workers via Redis when REDIS_URL is set, else per process"""
+    if redis_client is not None:
+        return RedisRateLimiter(redis_client, name, max_attempts, window_seconds, **kwargs)
+    return RateLimiter(max_attempts, window_seconds, **kwargs)
+
+
+user_store = UserStore(database)
 auth_router, get_current_user = create_auth(
     user_store,
     config.JWT_SECRET,
     config.JWT_EXPIRE_MINUTES,
-    RateLimiter(max_attempts=config.AUTH_RATE_LIMIT, window_seconds=config.AUTH_RATE_WINDOW),
+    make_limiter("auth", config.AUTH_RATE_LIMIT, config.AUTH_RATE_WINDOW),
 )
 app.include_router(auth_router)
 
 # Thumbs up/down feedback on answers (same sqlite file as the users table)
-app.include_router(create_feedback_router(FeedbackStore(config.USERS_DB_PATH), get_current_user))
+app.include_router(create_feedback_router(FeedbackStore(database), get_current_user))
 
 # Persisted chat history, replayed in the UI after login
-message_store = MessageStore(config.USERS_DB_PATH)
+message_store = MessageStore(database)
 app.include_router(
     create_messages_router(message_store, get_current_user, config.MAX_STORED_MESSAGES)
 )
+
+# All stores have created their tables; apply versioned schema changes (indexes, ...)
+migrate(database)
 
 
 # Pydantic models for request/response
@@ -152,15 +197,25 @@ class CourseStats(BaseModel):
 # API Endpoints
 
 
-query_limiter = RateLimiter(
-    max_attempts=config.QUERY_RATE_LIMIT,
-    window_seconds=config.QUERY_RATE_WINDOW,
+query_limiter = make_limiter(
+    "query",
+    config.QUERY_RATE_LIMIT,
+    config.QUERY_RATE_WINDOW,
     detail="Too many questions. Please wait a moment and try again.",
 )
 
 
 def limit_queries(user: User = Depends(get_current_user)) -> User:
-    """Authenticate, then apply the per-user query rate limit."""
+    """Authenticate, then apply the daily quota and the per-user query rate limit."""
+    if config.DAILY_QUERY_QUOTA:
+        used = message_store.count_questions_since(user.id, 24)
+        if used >= config.DAILY_QUERY_QUOTA:
+            logger.warning("Daily quota reached (user=%s, used=%d)", user.id, used)
+            raise HTTPException(
+                status_code=429,
+                detail="Daily question limit reached. Please try again tomorrow.",
+                headers={"Retry-After": "3600"},
+            )
     query_limiter.check(f"user:{user.id}")
     return user
 
@@ -259,7 +314,7 @@ async def query_documents_stream(request: QueryRequest, user: User = Depends(lim
     """
     events = None
     try:
-        session_id = _open_session(request, user)
+        session_id = await asyncio.to_thread(_open_session, request, user)
         logger.info("Stream query received (session=%s, %d chars)", session_id, len(request.query))
         events = rag_system.aquery_stream(
             request.query, session_id, langsmith_extra=_langsmith_extra(user, session_id)
@@ -311,6 +366,44 @@ async def healthz():
     return {"status": "ok"}
 
 
+def _check_redis() -> None:
+    if redis_client is not None:
+        redis_client.ping()
+
+
+def _readiness_checks() -> list:
+    checks = [
+        ("vector_store", rag_system.vector_store.get_course_count),
+        ("database", database.ping),
+    ]
+    if redis_client is not None:
+        checks.append(("redis", _check_redis))
+    return checks
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness probe: no auth; 503 unless the vector store and the sqlite file both work.
+
+    Plain `def` so the blocking checks run in the threadpool. The LLM and guard providers are
+    deliberately not probed: it would cost a call per probe, and their outages are reported
+    per request instead.
+    """
+    checks = {}
+    for name, check in _readiness_checks():
+        try:
+            check()
+            checks[name] = "ok"
+        except Exception:
+            logger.exception("Readiness check failed: %s", name)
+            checks[name] = "failed"
+    ready = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        {"status": "ready" if ready else "unavailable", "checks": checks},
+        status_code=200 if ready else 503,
+    )
+
+
 @app.get("/api/config")
 async def get_client_config(response: Response):
     """Public client-side limits, so the UI never hardcodes them"""
@@ -334,4 +427,4 @@ async def get_course_stats(response: Response):
 
 
 # Serve static files for the frontend
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
+app.mount("/", StaticFiles(directory=config.FRONTEND_PATH, html=True), name="static")
