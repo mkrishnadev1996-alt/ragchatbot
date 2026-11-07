@@ -187,6 +187,21 @@ def test_readyz_503_when_vector_store_fails(env):
     assert res.json()["checks"] == {"vector_store": "failed", "database": "ok"}
 
 
+def test_startup_ingestion_can_be_disabled(env, monkeypatch):
+    app_module, _, rag = env
+    rag.input_guard = None
+    monkeypatch.setattr(config, "DOCS_PATH", BACKEND_DIR)  # any existing folder
+    monkeypatch.setattr(config, "INGEST_ON_STARTUP", False)
+    with TestClient(app_module.app):
+        pass
+    rag.add_course_folder.assert_not_called()
+    monkeypatch.setattr(config, "INGEST_ON_STARTUP", True)
+    rag.add_course_folder.return_value = (0, 0)
+    with TestClient(app_module.app):
+        pass
+    rag.add_course_folder.assert_called_once()
+
+
 def test_daily_quota_blocks_with_429(env, monkeypatch):
     _, client, rag = env
     monkeypatch.setattr(config, "DAILY_QUERY_QUOTA", 2)

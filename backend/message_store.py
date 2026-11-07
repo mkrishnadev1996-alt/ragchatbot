@@ -2,12 +2,11 @@
 
 import json
 import logging
-import sqlite3
 from contextlib import closing
 
-from feedback_store import FEEDBACK_SCHEMA
+from feedback_store import feedback_schema
 from models import Source
-from utils.db import connect
+from utils.db import Database, as_database
 
 logger = logging.getLogger(__name__)
 
@@ -19,28 +18,29 @@ def _load_sources(raw: str | None) -> list[dict]:
 
 
 class MessageStore:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        with closing(self._connect()) as conn, conn:
-            conn.execute(
-                """
+    def __init__(self, db: Database | str):
+        self.db = as_database(db)
+        self.db.run_ddl(
+            [
+                f"""
                 CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {self.db.pk_column()},
                     user_id INTEGER NOT NULL,
                     session_id TEXT,
                     message_id TEXT,
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     sources TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at {self.db.timestamp_column()}
                 )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages (user_id, id)")
-            conn.execute(FEEDBACK_SCHEMA)  # list_messages joins against it
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_messages_user ON messages (user_id, id)",
+                feedback_schema(self.db),  # list_messages joins against it
+            ]
+        )
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect(self.db_path)
+    def _connect(self):
+        return self.db.connect()
 
     def add_exchange(
         self,
@@ -78,11 +78,11 @@ class MessageStore:
         """How many questions the user has asked in the last `hours` (for the daily quota)."""
         with closing(self._connect()) as conn:
             (count,) = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM messages
-                WHERE user_id = ? AND role = 'user' AND created_at >= datetime('now', ?)
+                WHERE user_id = ? AND role = 'user' AND created_at >= {self.db.seconds_ago_sql()}
                 """,
-                (user_id, f"-{hours} hours"),
+                (user_id, float(hours) * 3600),
             ).fetchone()
         return count
 
@@ -90,7 +90,8 @@ class MessageStore:
         """Delete messages older than `days` days; returns how many rows were removed."""
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "DELETE FROM messages WHERE created_at < datetime('now', ?)", (f"-{days} days",)
+                f"DELETE FROM messages WHERE created_at < {self.db.seconds_ago_sql()}",
+                (float(days) * 86400,),
             )
             return cur.rowcount
 
@@ -105,7 +106,7 @@ class MessageStore:
                 SELECT m.role, m.content, m.sources, m.message_id, f.rating
                 FROM messages m
                 LEFT JOIN feedback f ON f.message_id = m.message_id AND f.user_id = m.user_id
-                WHERE m.user_id = ? AND (? IS NULL OR m.session_id = ?)
+                WHERE m.user_id = ? AND (CAST(? AS TEXT) IS NULL OR m.session_id = ?)
                 ORDER BY m.id DESC
                 LIMIT ?
                 """,

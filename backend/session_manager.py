@@ -1,3 +1,4 @@
+import json
 import secrets
 import threading
 import time
@@ -108,20 +109,88 @@ class SessionManager:
         return self._fit_budget([{"role": m.role, "content": m.content} for m in messages])
 
     def _fit_budget(self, messages: list[dict[str, str]]) -> list[dict[str, str]] | None:
-        """Keep the newest messages whose combined length fits max_history_chars"""
-        budget = self.max_history_chars
-        if not budget:
-            return messages
-        kept: list[dict[str, str]] = []
-        for msg in reversed(messages):
-            size = len(msg["content"])
-            if size > budget:
-                if not kept:  # newest message alone is too big: keep its tail
-                    kept.append({**msg, "content": msg["content"][-budget:]})
-                break
-            kept.append(msg)
-            budget -= size
-        kept.reverse()
-        while kept and kept[0]["role"] != "user":  # providers expect a question first
-            kept.pop(0)
-        return kept or None
+        return fit_history_budget(messages, self.max_history_chars)
+
+
+def fit_history_budget(messages: list[dict[str, str]], budget: int) -> list[dict[str, str]] | None:
+    """Keep the newest messages whose combined length fits `budget` characters (0 = no limit).
+
+    Oldest messages go first, a single oversized newest message is cut to its tail, and the
+    result never starts with an answer (providers expect a question first).
+    """
+    if not budget:
+        return messages
+    kept: list[dict[str, str]] = []
+    for msg in reversed(messages):
+        size = len(msg["content"])
+        if size > budget:
+            if not kept:
+                kept.append({**msg, "content": msg["content"][-budget:]})
+            break
+        kept.append(msg)
+        budget -= size
+    kept.reverse()
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    return kept or None
+
+
+class RedisSessionManager(SessionManager):
+    """Sessions in Redis, so any worker/replica can continue any conversation.
+
+    Same interface as SessionManager. Per session two keys exist: the owner id and a capped
+    list of JSON messages. Both expire after `ttl_seconds` of inactivity (Redis does the
+    eviction, so `max_sessions` is not enforced here).
+    """
+
+    def __init__(self, client, *args, prefix: str = "rag:", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.redis = client
+        self.prefix = prefix
+
+    def _owner_key(self, session_id: str) -> str:
+        return f"{self.prefix}sess:{session_id}:owner"
+
+    def _msgs_key(self, session_id: str) -> str:
+        return f"{self.prefix}sess:{session_id}:msgs"
+
+    def _touch(self, pipe, session_id: str) -> None:
+        if self.ttl_seconds:
+            ttl = max(1, int(self.ttl_seconds))
+            pipe.expire(self._owner_key(session_id), ttl)
+            pipe.expire(self._msgs_key(session_id), ttl)
+
+    def create_session(self, user_id: int | None = None) -> str:
+        session_id = f"session_{secrets.token_urlsafe(16)}"
+        pipe = self.redis.pipeline()
+        pipe.set(self._owner_key(session_id), "" if user_id is None else str(user_id))
+        self._touch(pipe, session_id)
+        pipe.execute()
+        return session_id
+
+    def is_owner(self, session_id: str, user_id: int) -> bool:
+        pipe = self.redis.pipeline()
+        pipe.get(self._owner_key(session_id))
+        self._touch(pipe, session_id)
+        owner = pipe.execute()[0]
+        return owner is not None and owner == str(user_id)
+
+    def add_message(self, session_id: str, role: str, content: str):
+        key = self._msgs_key(session_id)
+        pipe = self.redis.pipeline()
+        pipe.rpush(key, json.dumps({"role": role, "content": content}))
+        pipe.ltrim(key, -self.max_history * 2, -1)
+        self._touch(pipe, session_id)
+        pipe.execute()
+
+    def get_conversation_history(self, session_id: str | None) -> list[dict[str, str]] | None:
+        if not session_id:
+            return None
+        pipe = self.redis.pipeline()
+        pipe.exists(self._owner_key(session_id))
+        pipe.lrange(self._msgs_key(session_id), 0, -1)
+        self._touch(pipe, session_id)
+        exists, raw = pipe.execute()[:2]
+        if not exists or not raw:
+            return None
+        return self._fit_budget([json.loads(item) for item in raw])

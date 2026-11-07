@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -9,7 +10,8 @@ from input_guard import InputGuard
 from langsmith import get_current_run_tree, traceable
 from models import Course, Source
 from search_tools import CourseSearchTool, ToolManager
-from session_manager import SessionManager
+from session_manager import RedisSessionManager, SessionManager
+from utils.redis_client import get_redis
 from vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -53,12 +55,26 @@ class RAGSystem:
             max_retries=config.LLM_MAX_RETRIES,
             timeout=getattr(config, "LLM_TIMEOUT", 60),
         )
-        self.session_manager = SessionManager(
-            config.MAX_HISTORY,
-            ttl_seconds=getattr(config, "SESSION_TTL_SECONDS", 0),
-            max_sessions=getattr(config, "MAX_SESSIONS", 0),
-            max_history_chars=getattr(config, "MAX_HISTORY_CHARS", 0),
-        )
+        ttl_seconds = getattr(config, "SESSION_TTL_SECONDS", 0)
+        max_sessions = getattr(config, "MAX_SESSIONS", 0)
+        max_history_chars = getattr(config, "MAX_HISTORY_CHARS", 0)
+        redis_url = getattr(config, "REDIS_URL", "")
+        self.session_manager: SessionManager
+        if redis_url:
+            self.session_manager = RedisSessionManager(
+                get_redis(redis_url),
+                config.MAX_HISTORY,
+                ttl_seconds=ttl_seconds,
+                max_sessions=max_sessions,
+                max_history_chars=max_history_chars,
+            )
+        else:
+            self.session_manager = SessionManager(
+                config.MAX_HISTORY,
+                ttl_seconds=ttl_seconds,
+                max_sessions=max_sessions,
+                max_history_chars=max_history_chars,
+            )
 
         # Optional pre-LLM safety/scope check; off when no guard API key is configured
         guard_key = getattr(config, "GUARD_API_KEY", "")
@@ -215,9 +231,12 @@ class RAGSystem:
         one delta and is not saved. Errors (e.g. LLMRateLimitError) propagate to the caller.
         The input guard and the LLM are awaited (async httpx / astream).
         """
+        # Session storage may be Redis (blocking client): keep it off the event loop
         history = None
         if session_id:
-            history = self.session_manager.get_conversation_history(session_id)
+            history = await asyncio.to_thread(
+                self.session_manager.get_conversation_history, session_id
+            )
 
         if self.input_guard and not await self.input_guard.ais_safe(query, history):
             _annotate_run(blocked=True)
@@ -241,7 +260,7 @@ class RAGSystem:
         answer = "".join(parts)
 
         if session_id:
-            self.session_manager.add_exchange(session_id, query, answer)
+            await asyncio.to_thread(self.session_manager.add_exchange, session_id, query, answer)
         yield QueryResult(answer, sources)
 
     def get_course_analytics(self) -> dict:

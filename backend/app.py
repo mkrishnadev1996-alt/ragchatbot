@@ -8,10 +8,10 @@ import logging
 import math
 import os
 import uuid
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
 
 from ai_generator import LLMRateLimitError
-from auth import RateLimiter, create_auth
+from auth import RateLimiter, RedisRateLimiter, create_auth
 from config import config
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,9 +28,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_system import QueryResult, RAGSystem
 from user_store import User, UserStore
 from utils.body_limit import BodySizeLimitMiddleware
-from utils.db import connect
+from utils.db import open_database
 from utils.logging_config import setup_logging
 from utils.migrations import migrate
+from utils.redis_client import get_redis
 from utils.security_headers import SecurityHeadersMiddleware
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
@@ -49,7 +50,9 @@ async def lifespan(_app: FastAPI):
         except Exception:
             logger.exception("Message retention purge failed")
     docs_path = config.DOCS_PATH
-    if os.path.exists(docs_path):
+    if not config.INGEST_ON_STARTUP:
+        logger.info("INGEST_ON_STARTUP is off; skipping document ingestion (run ingest.py)")
+    elif os.path.exists(docs_path):
         logger.info("Loading initial documents from %s", docs_path)
         try:
             courses, chunks = rag_system.add_course_folder(docs_path, clear_existing=False)
@@ -61,9 +64,10 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        # Close the input guard's shared async HTTP client
+        # Close the input guard's shared async HTTP client and the database pool
         if rag_system.input_guard:
             await rag_system.input_guard.aclose()
+        database.close()
 
 
 # Initialize FastAPI app
@@ -131,26 +135,37 @@ app.add_middleware(
 rag_system = RAGSystem(config)
 
 # Authentication. The router must be included before the catch-all static mount below.
-user_store = UserStore(config.USERS_DB_PATH)
+database = open_database(config.DATABASE_URL, config.USERS_DB_PATH, config.DATABASE_POOL_SIZE)
+redis_client = get_redis(config.REDIS_URL) if config.REDIS_URL else None
+
+
+def make_limiter(name: str, max_attempts: int, window_seconds: int, **kwargs) -> RateLimiter:
+    """Rate limiter shared across workers via Redis when REDIS_URL is set, else per process"""
+    if redis_client is not None:
+        return RedisRateLimiter(redis_client, name, max_attempts, window_seconds, **kwargs)
+    return RateLimiter(max_attempts, window_seconds, **kwargs)
+
+
+user_store = UserStore(database)
 auth_router, get_current_user = create_auth(
     user_store,
     config.JWT_SECRET,
     config.JWT_EXPIRE_MINUTES,
-    RateLimiter(max_attempts=config.AUTH_RATE_LIMIT, window_seconds=config.AUTH_RATE_WINDOW),
+    make_limiter("auth", config.AUTH_RATE_LIMIT, config.AUTH_RATE_WINDOW),
 )
 app.include_router(auth_router)
 
 # Thumbs up/down feedback on answers (same sqlite file as the users table)
-app.include_router(create_feedback_router(FeedbackStore(config.USERS_DB_PATH), get_current_user))
+app.include_router(create_feedback_router(FeedbackStore(database), get_current_user))
 
 # Persisted chat history, replayed in the UI after login
-message_store = MessageStore(config.USERS_DB_PATH)
+message_store = MessageStore(database)
 app.include_router(
     create_messages_router(message_store, get_current_user, config.MAX_STORED_MESSAGES)
 )
 
 # All stores have created their tables; apply versioned schema changes (indexes, ...)
-migrate(config.USERS_DB_PATH)
+migrate(database)
 
 
 # Pydantic models for request/response
@@ -182,9 +197,10 @@ class CourseStats(BaseModel):
 # API Endpoints
 
 
-query_limiter = RateLimiter(
-    max_attempts=config.QUERY_RATE_LIMIT,
-    window_seconds=config.QUERY_RATE_WINDOW,
+query_limiter = make_limiter(
+    "query",
+    config.QUERY_RATE_LIMIT,
+    config.QUERY_RATE_WINDOW,
     detail="Too many questions. Please wait a moment and try again.",
 )
 
@@ -298,7 +314,7 @@ async def query_documents_stream(request: QueryRequest, user: User = Depends(lim
     """
     events = None
     try:
-        session_id = _open_session(request, user)
+        session_id = await asyncio.to_thread(_open_session, request, user)
         logger.info("Stream query received (session=%s, %d chars)", session_id, len(request.query))
         events = rag_system.aquery_stream(
             request.query, session_id, langsmith_extra=_langsmith_extra(user, session_id)
@@ -350,9 +366,19 @@ async def healthz():
     return {"status": "ok"}
 
 
-def _check_sqlite() -> None:
-    with closing(connect(config.USERS_DB_PATH)) as conn:
-        conn.execute("SELECT 1").fetchone()
+def _check_redis() -> None:
+    if redis_client is not None:
+        redis_client.ping()
+
+
+def _readiness_checks() -> list:
+    checks = [
+        ("vector_store", rag_system.vector_store.get_course_count),
+        ("database", database.ping),
+    ]
+    if redis_client is not None:
+        checks.append(("redis", _check_redis))
+    return checks
 
 
 @app.get("/readyz")
@@ -364,10 +390,7 @@ def readyz():
     per request instead.
     """
     checks = {}
-    for name, check in (
-        ("vector_store", rag_system.vector_store.get_course_count),
-        ("database", _check_sqlite),
-    ):
+    for name, check in _readiness_checks():
         try:
             check()
             checks[name] = "ok"

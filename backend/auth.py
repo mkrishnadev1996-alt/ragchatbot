@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 
+import redis as redis_lib
 from config import config
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -76,6 +77,41 @@ class RateLimiter:
                 headers={"Retry-After": str(max(1, math.ceil(self.window - (now - hits[0]))))},
             )
         hits.append(now)
+
+
+class RedisRateLimiter(RateLimiter):
+    """Fixed-window limiter in Redis, shared by every worker/replica.
+
+    Fixed (not sliding) windows keep it to one atomic INCR per request; a client can burst up
+    to twice the limit across a window boundary. If Redis is unreachable the limiter fails
+    open (logged) rather than turning a cache outage into a full outage.
+    """
+
+    def __init__(self, client, name: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.redis = client
+        self.name = name
+
+    def check(self, key: str) -> None:
+        redis_key = f"rag:rl:{self.name}:{key}"
+        try:
+            pipe = self.redis.pipeline()
+            pipe.incr(redis_key)
+            pipe.ttl(redis_key)
+            count, ttl = pipe.execute()
+            if ttl < 0:  # first hit of the window (or a key that lost its expiry)
+                self.redis.expire(redis_key, self.window)
+                ttl = self.window
+        except redis_lib.RedisError:
+            logger.exception("Rate limiter could not reach Redis; allowing the request")
+            return
+        if count > self.max_attempts:
+            logger.warning("Rate limit hit (key=%s)", key)
+            raise HTTPException(
+                status_code=429,
+                detail=self.detail,
+                headers={"Retry-After": str(max(1, ttl))},
+            )
 
 
 def create_auth(

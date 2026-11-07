@@ -34,6 +34,12 @@ class Config:
     JWT_SECRET: str = os.getenv("JWT_SECRET", "")
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24)))
     USERS_DB_PATH: str = os.getenv("USERS_DB_PATH", "./users.db")
+    # PostgreSQL for users/feedback/messages (postgresql://user:pass@host/db). Empty = the sqlite
+    # file above. Required when running more than one process that must share this data.
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
+    # Redis for sessions and rate limits (redis://host:6379/0). Empty = in-memory, per process.
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
     PASSWORD_MIN_LENGTH: int = 8
     PASSWORD_MAX_LENGTH: int = 128
     AUTH_RATE_LIMIT: int = int(
@@ -96,6 +102,9 @@ class Config:
     # which must be backend/ when started outside Docker)
     CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db")  # ChromaDB storage location
     DOCS_PATH: str = os.getenv("DOCS_PATH", "../docs")  # Course documents ingested at startup
+    # Ingest DOCS_PATH when the server starts. Turn off when several workers run, and ingest
+    # with `python ingest.py` instead (embedded Chroma is not safe for concurrent writers).
+    INGEST_ON_STARTUP: bool = os.getenv("INGEST_ON_STARTUP", "true").lower() not in _FALSE
     FRONTEND_PATH: str = os.getenv("FRONTEND_PATH", "../frontend")  # Static UI
 
     # Logging settings

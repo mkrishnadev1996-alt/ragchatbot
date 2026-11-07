@@ -1,35 +1,34 @@
 """SQLite-backed storage for per-answer thumbs up/down feedback."""
 
 import logging
-import sqlite3
 from contextlib import closing
 
-from utils.db import connect
+from utils.db import Database, as_database
 
 logger = logging.getLogger(__name__)
 
 
-# The one definition of the feedback table (MessageStore creates it too, for its join)
-FEEDBACK_SCHEMA = """
-    CREATE TABLE IF NOT EXISTS feedback (
-        message_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        session_id TEXT,
-        rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (message_id, user_id)
-    )
-"""
+def feedback_schema(db: Database) -> str:
+    """The one definition of the feedback table (MessageStore creates it too, for its join)"""
+    return f"""
+        CREATE TABLE IF NOT EXISTS feedback (
+            message_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            session_id TEXT,
+            rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+            updated_at {db.timestamp_column()},
+            PRIMARY KEY (message_id, user_id)
+        )
+    """
 
 
 class FeedbackStore:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        with closing(self._connect()) as conn, conn:
-            conn.execute(FEEDBACK_SCHEMA)
+    def __init__(self, db: Database | str):
+        self.db = as_database(db)
+        self.db.run_ddl([feedback_schema(self.db)])
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect(self.db_path)
+    def _connect(self):
+        return self.db.connect()
 
     def set_rating(
         self, message_id: str, user_id: int, rating: str, session_id: str | None = None
