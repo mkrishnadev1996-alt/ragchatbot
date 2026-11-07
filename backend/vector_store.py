@@ -4,6 +4,7 @@ from typing import Any
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langsmith import traceable
 from models import Course, CourseChunk
 
@@ -61,11 +62,7 @@ class VectorStore:
         )
 
         # Set up sentence transformer embedding function
-        self.embedding_function = (
-            chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=embedding_model
-            )
-        )
+        self.embedding_function = SentenceTransformerEmbeddingFunction(model_name=embedding_model)
 
         # Create collections for different types of data
         self.course_catalog = self._create_collection("course_catalog")  # Course titles/instructors

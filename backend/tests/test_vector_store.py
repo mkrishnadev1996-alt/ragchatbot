@@ -38,6 +38,9 @@ class TestVectorStore(unittest.TestCase):
         patcher = patch("vector_store.chromadb")
         self.chromadb = patcher.start()
         self.addCleanup(patcher.stop)
+        embedder = patch("vector_store.SentenceTransformerEmbeddingFunction")
+        self.embedder = embedder.start()
+        self.addCleanup(embedder.stop)
 
         self.client = self.chromadb.PersistentClient.return_value
         self.catalog = MagicMock(name="course_catalog")
