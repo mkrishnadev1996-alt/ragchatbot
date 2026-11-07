@@ -66,6 +66,16 @@ class Config:
     QUERY_RATE_LIMIT: int = int(os.getenv("QUERY_RATE_LIMIT", "20"))  # Max queries per window
     QUERY_RATE_WINDOW: int = int(os.getenv("QUERY_RATE_WINDOW", "60"))  # Window in seconds
 
+    # Network exposure. Comma-separated lists; "*" allows any. Auth uses bearer tokens (not
+    # cookies), so CORS credentials are never enabled.
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+    ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "*")
+    MAX_BODY_BYTES: int = int(os.getenv("MAX_BODY_BYTES", str(64 * 1024)))  # Request body cap
+
+    # In-memory session expiry (idle time) and cap on live sessions
+    SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", str(24 * 3600)))
+    MAX_SESSIONS: int = int(os.getenv("MAX_SESSIONS", "10000"))
+
     # Message history and HTTP caching
     MAX_STORED_MESSAGES: int = 200  # Messages returned by GET /api/messages
     CONFIG_CACHE_SECONDS: int = 3600  # Cache-Control max-age for /api/config

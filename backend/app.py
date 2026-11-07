@@ -13,7 +13,6 @@ from config import config
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from feedback import create_feedback_router
 from feedback_store import FeedbackStore
@@ -22,6 +21,7 @@ from messages import create_messages_router
 from pydantic import BaseModel, ConfigDict, Field
 from rag_system import RAGSystem
 from user_store import User, UserStore
+from utils.body_limit import BodySizeLimitMiddleware
 from utils.logging_config import setup_logging
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
@@ -30,17 +30,23 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Course Materials RAG System", root_path="")
 
-# Add trusted host middleware for proxy
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
-# Enable CORS with proper settings for proxy
+def _csv(value: str) -> list[str]:
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.MAX_BODY_BYTES)
+
+# Trusted hosts and CORS are config-driven (ALLOWED_HOSTS / ALLOWED_ORIGINS, "*" = any).
+# Auth uses bearer tokens rather than cookies, so credentials are not allowed cross-origin.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_csv(config.ALLOWED_HOSTS) or ["*"])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_csv(config.ALLOWED_ORIGINS) or ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 # Content-Security-Policy blocks injected scripts even if sanitizing ever misses something.
@@ -153,6 +159,7 @@ def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
             session_id = rag_system.session_manager.create_session(user.id)
         elif not rag_system.session_manager.is_owner(session_id, user.id):
             # Unknown and foreign sessions look the same, so ids can't be probed
+            logger.warning("Session access denied (user=%s, session=%s)", user.id, session_id)
             raise HTTPException(status_code=404, detail="Session not found")
 
         logger.info("Query received (session=%s, %d chars)", session_id, len(request.query))
@@ -195,6 +202,12 @@ def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
         raise _internal_error("Query failed", e) from e
 
 
+@app.get("/healthz")
+async def healthz():
+    """Liveness probe: no auth, touches no dependencies"""
+    return {"status": "ok"}
+
+
 @app.get("/api/config")
 async def get_client_config(response: Response):
     """Public client-side limits, so the UI never hardcodes them"""
@@ -230,20 +243,6 @@ async def startup_event():
             logger.exception("Error loading initial documents")
     else:
         logger.warning("Docs folder %s not found; skipping initial load", docs_path)
-
-
-# Custom static file handler with no-cache headers for development
-
-
-class DevStaticFiles(StaticFiles):
-    async def get_response(self, path: str, scope):
-        response = await super().get_response(path, scope)
-        if isinstance(response, FileResponse):
-            # Add no-cache headers for development
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
 
 
 # Serve static files for the frontend
