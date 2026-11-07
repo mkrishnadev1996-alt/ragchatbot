@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 from ai_generator import LLMRateLimitError
 from auth import RateLimiter, create_auth
@@ -27,8 +28,25 @@ from utils.logging_config import setup_logging
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Load the initial documents on startup"""
+    docs_path = "../docs"
+    if os.path.exists(docs_path):
+        logger.info("Loading initial documents from %s", docs_path)
+        try:
+            courses, chunks = rag_system.add_course_folder(docs_path, clear_existing=False)
+            logger.info("Loaded %d courses with %d chunks", courses, chunks)
+        except Exception:
+            logger.exception("Error loading initial documents")
+    else:
+        logger.warning("Docs folder %s not found; skipping initial load", docs_path)
+    yield
+
+
 # Initialize FastAPI app
-app = FastAPI(title="Course Materials RAG System", root_path="")
+app = FastAPI(title="Course Materials RAG System", root_path="", lifespan=lifespan)
 
 
 def _csv(value: str) -> list[str]:
@@ -228,21 +246,6 @@ async def get_course_stats(response: Response):
         )
     except Exception as e:
         raise _internal_error("Failed to load course stats", e) from e
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Load initial documents on startup"""
-    docs_path = "../docs"
-    if os.path.exists(docs_path):
-        logger.info("Loading initial documents from %s", docs_path)
-        try:
-            courses, chunks = rag_system.add_course_folder(docs_path, clear_existing=False)
-            logger.info("Loaded %d courses with %d chunks", courses, chunks)
-        except Exception:
-            logger.exception("Error loading initial documents")
-    else:
-        logger.warning("Docs folder %s not found; skipping initial load", docs_path)
 
 
 # Serve static files for the frontend
