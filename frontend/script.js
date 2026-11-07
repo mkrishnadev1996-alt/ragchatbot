@@ -50,6 +50,7 @@ function saveToken(token) {
 }
 
 // DOM elements
+let maxQueryLength = null; // loaded from /api/config; the backend enforces it regardless
 let chatMessages, chatInput, sendButton, totalCourses, courseTitles;
 
 // Initialize
@@ -64,6 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     setupAuth();
     showWelcome();
+    loadClientConfig();
     loadCourseStats();
 });
 
@@ -225,6 +227,10 @@ function setupEventListeners() {
 async function sendMessage() {
     const query = chatInput.value.trim();
     if (!query) return;
+    if (maxQueryLength && query.length > maxQueryLength) {
+        addMessage(`Your question is too long (${query.length} characters). Please keep it under ${maxQueryLength}.`, 'assistant');
+        return;
+    }
 
     // Disable input
     chatInput.value = '';
@@ -431,6 +437,19 @@ function createNewSession() {
 function showWelcome() {
     chatMessages.innerHTML = '';
     addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
+}
+
+// Load client limits (max question length) from the backend config
+async function loadClientConfig() {
+    try {
+        const response = await fetch(`${API_URL}/config`);
+        if (!response.ok) throw new Error('Failed to load config');
+        const data = await response.json();
+        maxQueryLength = data.max_query_length;
+        chatInput.maxLength = maxQueryLength;
+    } catch (error) {
+        console.error('Error loading client config:', error);
+    }
 }
 
 // Load course statistics

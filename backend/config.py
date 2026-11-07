@@ -45,6 +45,7 @@ class Config:
     CHUNK_OVERLAP: int = 100  # Characters to overlap between chunks
     MAX_RESULTS: int = 5  # Maximum search results to return
     MAX_HISTORY: int = 2  # Number of conversation messages to remember
+    MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))  # Max chars per question
 
     # Database paths
     CHROMA_PATH: str = "./chroma_db"  # ChromaDB storage location

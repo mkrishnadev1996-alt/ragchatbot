@@ -10,7 +10,7 @@ import uuid
 from ai_generator import LLMRateLimitError
 from auth import create_auth
 from config import config
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
@@ -19,7 +19,7 @@ from feedback import create_feedback_router
 from feedback_store import FeedbackStore
 from message_store import MessageStore
 from messages import create_messages_router
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from rag_system import RAGSystem
 from user_store import User, UserStore
 from utils.logging_config import setup_logging
@@ -65,7 +65,9 @@ app.include_router(create_messages_router(message_store, get_current_user))
 class QueryRequest(BaseModel):
     """Request model for course queries"""
 
-    query: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    query: str = Field(min_length=1, max_length=config.MAX_QUERY_LENGTH)
     session_id: str | None = None
 
 
@@ -138,11 +140,21 @@ async def query_documents(request: QueryRequest, user: User = Depends(get_curren
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@app.get("/api/config")
+async def get_client_config(response: Response):
+    """Public client-side limits, so the UI never hardcodes them"""
+    # Fixed for the life of the process (read from the environment at startup)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return {"max_query_length": config.MAX_QUERY_LENGTH}
+
+
 @app.get("/api/courses", response_model=CourseStats)
-async def get_course_stats():
+async def get_course_stats(response: Response):
     """Get course analytics and statistics"""
     try:
         analytics = rag_system.get_course_analytics()
+        # Courses are only ingested at startup, so a short browser cache is safe
+        response.headers["Cache-Control"] = "public, max-age=60"
         return CourseStats(
             total_courses=analytics["total_courses"], course_titles=analytics["course_titles"]
         )
