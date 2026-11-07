@@ -59,7 +59,7 @@ class Config:
     # found". Measured on the current catalog: real names/keywords 0.16-1.59, unrelated
     # words 1.61-1.84.
     COURSE_MATCH_MAX_DISTANCE: float = float(os.getenv("COURSE_MATCH_MAX_DISTANCE", "1.6"))
-    MAX_HISTORY: int = 2  # Number of conversation messages to remember
+    MAX_HISTORY: int = 2  # Exchanges (question + answer pairs) to remember
     MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))  # Max chars per question
 
     # Per-user rate limit on /api/query (each query costs an LLM call)

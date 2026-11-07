@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Lesson(BaseModel):
@@ -15,7 +15,7 @@ class Course(BaseModel):
     title: str  # Full course title (used as unique identifier)
     course_link: str | None = None  # URL link to the course
     instructor: str | None = None  # Course instructor name (optional metadata)
-    lessons: list[Lesson] = []  # List of lessons in this course
+    lessons: list[Lesson] = Field(default_factory=list)  # List of lessons in this course
 
 
 class CourseChunk(BaseModel):

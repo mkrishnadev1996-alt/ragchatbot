@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 
+from utils.db import connect
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,8 +37,7 @@ class UserStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        # One connection per call keeps this safe across uvicorn worker threads.
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def create_user(self, email: str, password_hash: str) -> User:
         try:
@@ -48,7 +49,8 @@ class UserStore:
                 user_id = cur.lastrowid
         except sqlite3.IntegrityError as e:
             raise UserExistsError(email) from e
-        assert user_id is not None
+        if user_id is None:
+            raise RuntimeError("sqlite returned no id for the new user")
         return User(id=user_id, email=email, password_hash=password_hash)
 
     def _get(self, where: str, param: object) -> User | None:

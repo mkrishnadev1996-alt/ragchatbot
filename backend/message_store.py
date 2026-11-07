@@ -5,6 +5,9 @@ import logging
 import sqlite3
 from contextlib import closing
 
+from feedback_store import FEEDBACK_SCHEMA
+from utils.db import connect
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,9 +30,10 @@ class MessageStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_user ON messages (user_id, id)")
+            conn.execute(FEEDBACK_SCHEMA)  # list_messages joins against it
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def add_exchange(
         self,
@@ -63,19 +67,6 @@ class MessageStore:
         """The user's most recent messages (optionally of one session), oldest first,
         with any thumbs rating attached."""
         with closing(self._connect()) as conn:
-            # The feedback table is created by FeedbackStore; make sure it exists for the join.
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS feedback (
-                    message_id TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    session_id TEXT,
-                    rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (message_id, user_id)
-                )
-                """
-            )
             rows = conn.execute(
                 """
                 SELECT m.role, m.content, m.sources, m.message_id, f.rating

@@ -54,6 +54,11 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
 
+    TRUNCATION_NOTICE = (
+        "\n\n*(This answer was cut off because it reached the length limit. "
+        "Ask a narrower question to get the rest.)*"
+    )
+
     def __init__(
         self,
         api_key: str,
@@ -116,7 +121,7 @@ Provide only the direct answer to what was asked.
             return self._handle_tool_execution(response, messages, tool_manager, sources_out)
 
         # Return direct response
-        return response.text
+        return self._text(response)
 
     def _handle_tool_execution(
         self,
@@ -160,7 +165,14 @@ Provide only the direct answer to what was asked.
 
         # Final call on the unbound model: no tools, so this is the last round
         final_response = self._invoke(self.llm, follow_up)
-        return final_response.text
+        return self._text(final_response)
+
+    def _text(self, response: AIMessage) -> str:
+        """The answer text, with a visible notice if the provider stopped at max_tokens"""
+        if response.response_metadata.get("finish_reason") == "length":
+            logger.warning("LLM answer truncated at max_tokens (model=%s)", self.model)
+            return response.text + self.TRUNCATION_NOTICE
+        return response.text
 
     def _invoke(self, runnable: Any, messages: list[BaseMessage]) -> AIMessage:
         """Invoke the model, translating provider rate limits into LLMRateLimitError"""

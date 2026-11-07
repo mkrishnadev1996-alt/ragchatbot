@@ -436,7 +436,6 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Removed removeMessage function - no longer needed since we handle loading differently
 
 function createNewSession() {
     setSessionId(null);
@@ -464,12 +463,10 @@ async function loadClientConfig() {
 // Load course statistics
 async function loadCourseStats() {
     try {
-        console.log('Loading course stats...');
         const response = await fetch(`${API_URL}/courses`);
         if (!response.ok) throw new Error('Failed to load course stats');
         
         const data = await response.json();
-        console.log('Course data received:', data);
         
         // Update stats in UI
         if (totalCourses) {
