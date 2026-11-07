@@ -52,6 +52,7 @@ class RateLimiter:
         self.window = window_seconds
         self.detail = detail
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._last_sweep = time.monotonic()
         self._lock = threading.Lock()  # handlers run in a threadpool
 
     def check(self, key: str) -> None:
@@ -60,10 +61,15 @@ class RateLimiter:
 
     def _check(self, key: str) -> None:
         now = time.monotonic()
+        if now - self._last_sweep > self.window:  # forget keys with no recent hits
+            self._last_sweep = now
+            for k in [k for k, h in self._hits.items() if not h or now - h[-1] > self.window]:
+                del self._hits[k]
         hits = self._hits[key]
         while hits and now - hits[0] > self.window:
             hits.popleft()
         if len(hits) >= self.max_attempts:
+            logger.warning("Rate limit hit (key=%s)", key)
             raise HTTPException(
                 status_code=429,
                 detail=self.detail,
@@ -108,6 +114,7 @@ def create_auth(
         user_id = decode_token(creds.credentials, secret)
         user = store.get_by_id(user_id) if user_id is not None else None
         if user is None:
+            logger.warning("Rejected invalid or expired token")
             raise unauthorized
         return user
 
@@ -127,6 +134,7 @@ def create_auth(
         user = store.get_by_email(body.email)
         ok = verify_password(body.password, user.password_hash if user else _DUMMY_HASH)
         if user is None or not ok:
+            logger.warning("Failed login (ip=%s)", _client_key(request))
             raise HTTPException(status_code=401, detail="Invalid email or password")
         return _respond(user)
 

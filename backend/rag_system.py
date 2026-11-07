@@ -52,7 +52,11 @@ class RAGSystem:
             max_retries=config.LLM_MAX_RETRIES,
             timeout=getattr(config, "LLM_TIMEOUT", 60),
         )
-        self.session_manager = SessionManager(config.MAX_HISTORY)
+        self.session_manager = SessionManager(
+            config.MAX_HISTORY,
+            ttl_seconds=getattr(config, "SESSION_TTL_SECONDS", 0),
+            max_sessions=getattr(config, "MAX_SESSIONS", 0),
+        )
 
         # Optional pre-LLM safety/scope check; off when no guard API key is configured
         guard_key = getattr(config, "GUARD_API_KEY", "")

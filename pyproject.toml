@@ -9,7 +9,6 @@ dependencies = [
     "sentence-transformers>=5.0.0",
     "fastapi>=0.116.1",
     "uvicorn>=0.35.0",
-    "python-multipart>=0.0.20",
     "python-dotenv>=1.1.1",
     "openai==3.42.1",
     "langchain-openai>=1.7.4",
@@ -19,11 +18,11 @@ dependencies = [
     "langsmith>=0.14.17",
     "pypdf>=7.0.0",
     "python-docx>=1.2.0",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "mypy>=2.4.1",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
