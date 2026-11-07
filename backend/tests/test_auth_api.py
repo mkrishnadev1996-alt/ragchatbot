@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from auth import RateLimiter, create_auth
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from user_store import User, UserStore
 
@@ -75,6 +75,16 @@ class TestAuthApi(unittest.TestCase):
         body = {"email": "a@example.com", "password": "password123"}
         codes = [client.post("/api/auth/login", json=body).status_code for _ in range(3)]
         self.assertEqual(codes, [401, 401, 429])
+
+    def test_limiter_is_per_key_with_retry_after(self):
+        limiter = RateLimiter(max_attempts=1, window_seconds=60, detail="slow down")
+        limiter.check("user:1")
+        limiter.check("user:2")  # other keys are unaffected
+        with self.assertRaises(HTTPException) as ctx:
+            limiter.check("user:1")
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.detail, "slow down")
+        self.assertTrue(1 <= int(ctx.exception.headers["Retry-After"]) <= 60)
 
     def test_missing_secret_fails_fast(self):
         store = UserStore(os.path.join(self.tmp.name, "x.db"))

@@ -1,6 +1,7 @@
 """Registration, login and the current-user dependency."""
 
 import logging
+import math
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -35,9 +36,15 @@ class TokenResponse(BaseModel):
 class RateLimiter:
     """In-memory sliding-window limiter keyed by client IP (single-process only)."""
 
-    def __init__(self, max_attempts: int = 10, window_seconds: int = 60):
+    def __init__(
+        self,
+        max_attempts: int = 10,
+        window_seconds: int = 60,
+        detail: str = "Too many attempts. Try again shortly.",
+    ):
         self.max_attempts = max_attempts
         self.window = window_seconds
+        self.detail = detail
         self._hits: dict[str, deque[float]] = defaultdict(deque)
 
     def check(self, key: str) -> None:
@@ -48,8 +55,8 @@ class RateLimiter:
         if len(hits) >= self.max_attempts:
             raise HTTPException(
                 status_code=429,
-                detail="Too many attempts. Try again shortly.",
-                headers={"Retry-After": str(self.window)},
+                detail=self.detail,
+                headers={"Retry-After": str(max(1, math.ceil(self.window - (now - hits[0]))))},
             )
         hits.append(now)
 

@@ -8,7 +8,7 @@ import os
 import uuid
 
 from ai_generator import LLMRateLimitError
-from auth import create_auth
+from auth import RateLimiter, create_auth
 from config import config
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,8 +90,21 @@ class CourseStats(BaseModel):
 # API Endpoints
 
 
+query_limiter = RateLimiter(
+    max_attempts=config.QUERY_RATE_LIMIT,
+    window_seconds=config.QUERY_RATE_WINDOW,
+    detail="Too many questions. Please wait a moment and try again.",
+)
+
+
+def limit_queries(user: User = Depends(get_current_user)) -> User:
+    """Authenticate, then apply the per-user query rate limit."""
+    query_limiter.check(f"user:{user.id}")
+    return user
+
+
 @app.post("/api/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest, user: User = Depends(get_current_user)):
+async def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
     """Process a query and return response with sources"""
     try:
         # Create session if not provided

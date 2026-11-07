@@ -47,6 +47,10 @@ class Config:
     MAX_HISTORY: int = 2  # Number of conversation messages to remember
     MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))  # Max chars per question
 
+    # Per-user rate limit on /api/query (each query costs an LLM call)
+    QUERY_RATE_LIMIT: int = int(os.getenv("QUERY_RATE_LIMIT", "20"))  # Max queries per window
+    QUERY_RATE_WINDOW: int = int(os.getenv("QUERY_RATE_WINDOW", "60"))  # Window in seconds
+
     # Database paths
     CHROMA_PATH: str = "./chroma_db"  # ChromaDB storage location
 
