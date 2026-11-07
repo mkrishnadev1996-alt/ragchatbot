@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from search_tools import CourseSearchTool, Tool, ToolManager
+from search_tools import CourseSearchTool, Tool, ToolManager, ToolResult
 from vector_store import SearchResults
 
 
@@ -14,7 +14,6 @@ class FakeTool(Tool):
 
     def __init__(self, name="fake_tool"):
         self._name = name
-        self.last_sources = []
         self.calls = []
 
     def get_tool_definition(self):
@@ -22,7 +21,7 @@ class FakeTool(Tool):
 
     def execute(self, **kwargs):
         self.calls.append(kwargs)
-        return f"ran with {kwargs}"
+        return ToolResult(f"ran with {kwargs}")
 
 
 class TestCourseSearchTool(unittest.TestCase):
@@ -60,17 +59,22 @@ class TestCourseSearchTool(unittest.TestCase):
     def test_execute_returns_store_error_verbatim(self):
         self.store.search.return_value = SearchResults.empty("No course found matching 'zzz'")
         result = self.tool.execute(query="x", course_name="zzz")
-        self.assertEqual(result, "No course found matching 'zzz'")
+        self.assertEqual(result.text, "No course found matching 'zzz'")
 
     def test_empty_results_without_filters(self):
         self.store.search.return_value = make_results([], [])
         result = self.tool.execute(query="x")
-        self.assertEqual(result, "No relevant content found.")
+        self.assertEqual(result.text, "No relevant content found.")
 
     def test_empty_results_mention_course_and_lesson_filters(self):
         self.store.search.return_value = make_results([], [])
         result = self.tool.execute(query="x", course_name="Intro", lesson_number=3)
-        self.assertEqual(result, "No relevant content found in course 'Intro' in lesson 3.")
+        self.assertEqual(result.text, "No relevant content found in course 'Intro' in lesson 3.")
+
+    def test_empty_results_mention_lesson_zero(self):
+        self.store.search.return_value = make_results([], [])
+        result = self.tool.execute(query="x", lesson_number=0)
+        self.assertEqual(result.text, "No relevant content found in lesson 0.")
 
     def test_results_are_formatted_with_headers(self):
         self.store.search.return_value = make_results(
@@ -82,7 +86,7 @@ class TestCourseSearchTool(unittest.TestCase):
         )
         result = self.tool.execute(query="rag")
         self.assertEqual(
-            result,
+            result.text,
             "[Intro to AI - Lesson 1]\nChunk about RAG.\n\n"
             "[Intro to AI - Lesson 2]\nChunk about tools.",
         )
@@ -92,10 +96,10 @@ class TestCourseSearchTool(unittest.TestCase):
             ["Course-level text."], [{"course_title": "Plain Course", "lesson_number": None}]
         )
         result = self.tool.execute(query="x")
-        self.assertEqual(result, "[Plain Course]\nCourse-level text.")
-        self.assertEqual(self.tool.last_sources, ["Plain Course"])
+        self.assertEqual(result.text, "[Plain Course]\nCourse-level text.")
+        self.assertEqual(result.sources, ["Plain Course"])
 
-    def test_last_sources_track_course_and_lesson(self):
+    def test_sources_track_course_and_lesson(self):
         self.store.search.return_value = make_results(
             ["a", "b"],
             [
@@ -103,8 +107,18 @@ class TestCourseSearchTool(unittest.TestCase):
                 {"course_title": "C2", "lesson_number": 1},
             ],
         )
-        self.tool.execute(query="x")
-        self.assertEqual(self.tool.last_sources, ["C1 - Lesson 4", "C2 - Lesson 1"])
+        result = self.tool.execute(query="x")
+        self.assertEqual(result.sources, ["C1 - Lesson 4", "C2 - Lesson 1"])
+
+    def test_sources_belong_to_each_call_not_the_shared_tool(self):
+        self.store.search.side_effect = [
+            make_results(["a"], [{"course_title": "C1", "lesson_number": 1}]),
+            make_results(["b"], [{"course_title": "C2", "lesson_number": 2}]),
+        ]
+        first = self.tool.execute(query="x")
+        second = self.tool.execute(query="y")
+        self.assertEqual(first.sources, ["C1 - Lesson 1"])
+        self.assertEqual(second.sources, ["C2 - Lesson 2"])
 
 
 class TestToolManager(unittest.TestCase):
@@ -128,35 +142,12 @@ class TestToolManager(unittest.TestCase):
         tool = FakeTool("alpha")
         manager.register_tool(tool)
         result = manager.execute_tool("alpha", query="hi")
-        self.assertEqual(result, "ran with {'query': 'hi'}")
+        self.assertEqual(result.text, "ran with {'query': 'hi'}")
         self.assertEqual(tool.calls, [{"query": "hi"}])
 
     def test_execute_unknown_tool_returns_message(self):
         manager = ToolManager()
-        self.assertEqual(manager.execute_tool("ghost"), "Tool 'ghost' not found")
-
-    def test_get_last_sources_returns_first_nonempty(self):
-        manager = ToolManager()
-        empty = FakeTool("a")
-        full = FakeTool("b")
-        full.last_sources = ["Course - Lesson 1"]
-        manager.register_tool(empty)
-        manager.register_tool(full)
-        self.assertEqual(manager.get_last_sources(), ["Course - Lesson 1"])
-
-    def test_get_last_sources_empty_when_no_tool_tracks_sources(self):
-        manager = ToolManager()
-        manager.register_tool(FakeTool("a"))
-        self.assertEqual(manager.get_last_sources(), [])
-
-    def test_reset_sources_clears_all_tools(self):
-        manager = ToolManager()
-        tool = FakeTool("a")
-        tool.last_sources = ["X"]
-        manager.register_tool(tool)
-        manager.reset_sources()
-        self.assertEqual(tool.last_sources, [])
-        self.assertEqual(manager.get_last_sources(), [])
+        self.assertEqual(manager.execute_tool("ghost").text, "Tool 'ghost' not found")
 
 
 if __name__ == "__main__":

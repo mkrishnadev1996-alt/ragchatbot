@@ -122,6 +122,32 @@ class TestProcessCourseDocument(unittest.TestCase):
         self.assertIn("Lesson 0 content:", lesson0[0].content)
         self.assertIn("Lesson 1 content:", lesson1[0].content)
 
+    def test_every_chunk_has_the_same_course_and_lesson_prefix(self):
+        path = self._write("course.txt", COURSE_DOC)
+        _, chunks = self.processor.process_course_document(path)
+
+        for chunk in chunks:
+            self.assertTrue(
+                chunk.content.startswith(
+                    f"Course Test Course Lesson {chunk.lesson_number} content: "
+                ),
+                chunk.content[:60],
+            )
+
+    def test_docx_files_are_parsed_as_text(self):
+        from docx import Document
+
+        document = Document()
+        for line in COURSE_DOC.split("\n"):
+            document.add_paragraph(line)
+        path = os.path.join(self.tmpdir.name, "course.docx")
+        document.save(path)
+
+        course, chunks = self.processor.process_course_document(path)
+
+        self.assertEqual(course.title, "Test Course")
+        self.assertTrue(chunks)
+
     def test_chunk_indexes_are_sequential(self):
         path = self._write("course.txt", COURSE_DOC)
         _, chunks = self.processor.process_course_document(path)

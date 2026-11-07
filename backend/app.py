@@ -10,7 +10,7 @@ import uuid
 from ai_generator import LLMRateLimitError
 from auth import RateLimiter, create_auth
 from config import config
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
@@ -42,6 +42,31 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Content-Security-Policy blocks injected scripts even if sanitizing ever misses something.
+# Scripts are all local (frontend/vendor); inline styles are used by the UI.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        # Swagger UI (/docs, /redoc) loads scripts from a CDN, so the strict CSP would break it
+        if name == "Content-Security-Policy" and request.url.path in ("/docs", "/redoc"):
+            continue
+        response.headers.setdefault(name, value)
+    return response
+
 
 # Initialize RAG system
 rag_system = RAGSystem(config)
@@ -103,8 +128,18 @@ def limit_queries(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+# Plain `def` (not `async def`): the RAG pipeline is blocking end to end (sync httpx guard,
+# ChromaDB and sentence-transformers have no async API), so FastAPI runs it in its threadpool
+# and the event loop stays free for other requests.
+def _internal_error(what: str, exc: Exception) -> HTTPException:
+    """Log the real error under a short id and give the client only a generic message + id"""
+    error_id = uuid.uuid4().hex[:8]
+    logger.error("%s (error_id=%s)", what, error_id, exc_info=exc)
+    return HTTPException(status_code=500, detail=f"Internal server error (reference: {error_id})")
+
+
 @app.post("/api/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
+def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
     """Process a query and return response with sources"""
     try:
         # Create session if not provided
@@ -116,10 +151,9 @@ async def query_documents(request: QueryRequest, user: User = Depends(limit_quer
             raise HTTPException(status_code=404, detail="Session not found")
 
         logger.info("Query received (session=%s, %d chars)", session_id, len(request.query))
-        logger.debug("Query text (session=%s): %s", session_id, request.query)
 
         # Process query using RAG system
-        answer, sources = rag_system.query(
+        result = rag_system.query(
             request.query,
             session_id,
             langsmith_extra={
@@ -129,16 +163,20 @@ async def query_documents(request: QueryRequest, user: User = Depends(limit_quer
         )
 
         message_id = uuid.uuid4().hex
-        try:
-            message_store.add_exchange(
-                user.id, session_id, request.query, answer, sources, message_id
-            )
-        except Exception:
-            # Losing history is better than failing an answer we already generated
-            logger.exception("Failed to persist exchange (session=%s)", session_id)
+        if not result.blocked:  # refused messages are not kept or replayed
+            try:
+                message_store.add_exchange(
+                    user.id, session_id, request.query, result.answer, result.sources, message_id
+                )
+            except Exception:
+                # Losing history is better than failing an answer we already generated
+                logger.exception("Failed to persist exchange (session=%s)", session_id)
 
         return QueryResponse(
-            answer=answer, sources=sources, session_id=session_id, message_id=message_id
+            answer=result.answer,
+            sources=result.sources,
+            session_id=session_id,
+            message_id=message_id,
         )
     except HTTPException:
         raise
@@ -149,8 +187,7 @@ async def query_documents(request: QueryRequest, user: User = Depends(limit_quer
             headers = {"Retry-After": str(max(1, math.ceil(e.retry_after)))}
         raise HTTPException(status_code=429, detail=str(e), headers=headers) from e
     except Exception as e:
-        logger.exception("Query failed; returning 500")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise _internal_error("Query failed", e) from e
 
 
 @app.get("/api/config")
@@ -172,8 +209,7 @@ async def get_course_stats(response: Response):
             total_courses=analytics["total_courses"], course_titles=analytics["course_titles"]
         )
     except Exception as e:
-        logger.exception("Failed to load course stats; returning 500")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise _internal_error("Failed to load course stats", e) from e
 
 
 @app.on_event("startup")

@@ -38,11 +38,14 @@ class InputGuard:
             "The user message is out of scope for an assistant that answers questions about "
             "online courses on AI and software engineering (LLMs, MCP, tool use, computer use, "
             "retrieval, vector databases, embeddings, prompt engineering and compression, "
-            "programming) and about the courses themselves (lessons, instructors, content).",
+            "programming) and about the courses themselves (lessons, instructors, content). "
+            "General educational or technical questions are in scope. A short follow-up that "
+            "depends on the earlier conversation (e.g. 'and lesson 3?') is in scope when that "
+            "conversation is.",
             "The message is about something else entirely, such as cooking, sports, "
             "entertainment, news or personal chit-chat.",
-            "The message is about AI, programming or software topics, or about a course, "
-            "lesson or instructor.",
+            "The message is about AI, programming, software or learning topics, about a course, "
+            "lesson or instructor, or a follow-up to such a conversation.",
         ),
     }
 
@@ -52,7 +55,26 @@ class InputGuard:
         self.model = model
         self.threshold = threshold
 
-    def _request_body(self, query: str) -> dict:
+    # How much of the conversation the guard sees, to resolve follow-ups like "and lesson 3?"
+    HISTORY_MESSAGES = 4
+    HISTORY_CHARS = 300
+
+    @classmethod
+    def _state(cls, query: str, history: list[dict[str, str]] | None) -> str:
+        """The text the guard judges: the current message, plus recent turns as context"""
+        if not history:
+            return query
+        nl = chr(10)
+        recent = nl.join(
+            f"{m['role']}: {m['content'][: cls.HISTORY_CHARS]}"
+            for m in history[-cls.HISTORY_MESSAGES :]
+        )
+        return (
+            f"Earlier conversation (context only):{nl}{recent}{nl}{nl}"
+            f"Current user message (judge this one):{nl}{query}"
+        )
+
+    def _request_body(self, query: str, history: list[dict[str, str]] | None = None) -> dict:
         questions = {
             qid: {
                 "type": "noul",
@@ -61,14 +83,14 @@ class InputGuard:
             }
             for qid, (instructions, true_criteria, false_criteria) in self.BEHAVIORS.items()
         }
-        return {"model": self.model, "state": query, "questions": questions}
+        return {"model": self.model, "state": self._state(query, history), "questions": questions}
 
-    def _scores(self, query: str) -> dict[str, float]:
+    def _scores(self, query: str, history: list[dict[str, str]] | None = None) -> dict[str, float]:
         """Call the Decisions API and return P(true) for each behavior"""
         response = httpx.post(
             self.url,
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json=self._request_body(query),
+            json=self._request_body(query, history),
             timeout=10.0,
         )
         response.raise_for_status()
@@ -83,10 +105,10 @@ class InputGuard:
         return scores
 
     @traceable(name="input_guard", run_type="tool")
-    def is_safe(self, query: str) -> bool:
+    def is_safe(self, query: str, history: list[dict[str, str]] | None = None) -> bool:
         """Return True if the query may proceed to the normal flow"""
         try:
-            scores = self._scores(query)
+            scores = self._scores(query, history)
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.exception("Input guard call failed (model=%s); allowing query", self.model)
             run = get_current_run_tree()

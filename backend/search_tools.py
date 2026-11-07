@@ -1,8 +1,21 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 
 from langsmith import traceable
 from vector_store import SearchResults, VectorStore
+
+
+@dataclass
+class ToolResult:
+    """What a tool returns: text for the LLM plus the sources to show in the UI.
+
+    Sources travel with the result instead of living on the (shared) tool instance, so
+    concurrent requests cannot see each other's sources.
+    """
+
+    text: str
+    sources: list[str] = field(default_factory=list)
 
 
 class Tool(ABC):
@@ -14,7 +27,7 @@ class Tool(ABC):
         pass
 
     @abstractmethod
-    def execute(self, **kwargs) -> str:
+    def execute(self, **kwargs) -> ToolResult:
         """Execute the tool with given parameters"""
         pass
 
@@ -24,7 +37,6 @@ class CourseSearchTool(Tool):
 
     def __init__(self, vector_store: VectorStore):
         self.store = vector_store
-        self.last_sources: list[str] = []  # Track sources from last search
 
     def get_tool_definition(self) -> dict[str, Any]:
         """Return OpenAI-compatible function tool definition for this tool"""
@@ -66,7 +78,7 @@ class CourseSearchTool(Tool):
     @traceable(name="search_course_content", run_type="tool")
     def execute(
         self, query: str, course_name: str | None = None, lesson_number: int | None = None
-    ) -> str:
+    ) -> ToolResult:
         """
         Execute the search tool with given parameters.
 
@@ -76,7 +88,7 @@ class CourseSearchTool(Tool):
             lesson_number: Optional lesson filter
 
         Returns:
-            Formatted search results or error message
+            Formatted search results (with their sources) or an error message
         """
 
         # Use the vector store's unified search interface
@@ -86,21 +98,21 @@ class CourseSearchTool(Tool):
 
         # Handle errors
         if results.error:
-            return results.error
+            return ToolResult(results.error)
 
         # Handle empty results
         if results.is_empty():
             filter_info = ""
             if course_name:
                 filter_info += f" in course '{course_name}'"
-            if lesson_number:
+            if lesson_number is not None:
                 filter_info += f" in lesson {lesson_number}"
-            return f"No relevant content found{filter_info}."
+            return ToolResult(f"No relevant content found{filter_info}.")
 
         # Format and return results
         return self._format_results(results)
 
-    def _format_results(self, results: SearchResults) -> str:
+    def _format_results(self, results: SearchResults) -> ToolResult:
         """Format search results with course and lesson context"""
         formatted = []
         sources = []  # Track sources for the UI
@@ -123,10 +135,7 @@ class CourseSearchTool(Tool):
 
             formatted.append(f"{header}\n{doc}")
 
-        # Store sources for retrieval
-        self.last_sources = sources
-
-        return "\n\n".join(formatted)
+        return ToolResult("\n\n".join(formatted), sources)
 
 
 class ToolManager:
@@ -147,23 +156,9 @@ class ToolManager:
         """Get all tool definitions for OpenAI-compatible tool calling"""
         return [tool.get_tool_definition() for tool in self.tools.values()]
 
-    def execute_tool(self, tool_name: str, **kwargs) -> str:
+    def execute_tool(self, tool_name: str, **kwargs) -> ToolResult:
         """Execute a tool by name with given parameters"""
         if tool_name not in self.tools:
-            return f"Tool '{tool_name}' not found"
+            return ToolResult(f"Tool '{tool_name}' not found")
 
         return self.tools[tool_name].execute(**kwargs)
-
-    def get_last_sources(self) -> list:
-        """Get sources from the last search operation"""
-        # Check all tools for last_sources attribute
-        for tool in self.tools.values():
-            if hasattr(tool, "last_sources") and tool.last_sources:
-                return tool.last_sources
-        return []
-
-    def reset_sources(self):
-        """Reset sources from all tools that track sources"""
-        for tool in self.tools.values():
-            if hasattr(tool, "last_sources"):
-                tool.last_sources = []

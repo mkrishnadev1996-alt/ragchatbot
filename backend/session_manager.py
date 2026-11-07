@@ -1,4 +1,5 @@
 import secrets
+import threading
 from dataclasses import dataclass
 
 
@@ -17,12 +18,14 @@ class SessionManager:
         self.max_history = max_history
         self.sessions: dict[str, list[Message]] = {}
         self.owners: dict[str, int | None] = {}
+        self._lock = threading.Lock()  # requests run in a threadpool
 
     def create_session(self, user_id: int | None = None) -> str:
         """Create a new conversation session with an unguessable id, owned by user_id"""
         session_id = f"session_{secrets.token_urlsafe(16)}"
-        self.sessions[session_id] = []
-        self.owners[session_id] = user_id
+        with self._lock:
+            self.sessions[session_id] = []
+            self.owners[session_id] = user_id
         return session_id
 
     def is_owner(self, session_id: str, user_id: int) -> bool:
@@ -31,15 +34,13 @@ class SessionManager:
 
     def add_message(self, session_id: str, role: str, content: str):
         """Add a message to the conversation history"""
-        if session_id not in self.sessions:
-            self.sessions[session_id] = []
+        with self._lock:
+            history = self.sessions.setdefault(session_id, [])
+            history.append(Message(role=role, content=content))
 
-        message = Message(role=role, content=content)
-        self.sessions[session_id].append(message)
-
-        # Keep conversation history within limits
-        if len(self.sessions[session_id]) > self.max_history * 2:
-            self.sessions[session_id] = self.sessions[session_id][-self.max_history * 2 :]
+            # Keep conversation history within limits
+            if len(history) > self.max_history * 2:
+                self.sessions[session_id] = history[-self.max_history * 2 :]
 
     def add_exchange(self, session_id: str, user_message: str, assistant_message: str):
         """Add a complete question-answer exchange"""
@@ -51,7 +52,7 @@ class SessionManager:
         if not session_id or session_id not in self.sessions:
             return None
 
-        messages = self.sessions[session_id]
+        messages = list(self.sessions[session_id])  # copy: another request may append
         if not messages:
             return None
 

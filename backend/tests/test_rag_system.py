@@ -50,10 +50,11 @@ class TestRAGSystem(unittest.TestCase):
             rag = RAGSystem(cfg)
             session_id = rag.session_manager.create_session()
 
-            answer, sources = rag.query("bad request", session_id)
+            result = rag.query("bad request", session_id)
 
-        self.assertEqual(answer, "Sorry, we cannot answer that.")
-        self.assertEqual(sources, [])
+        self.assertEqual(result.answer, "Sorry, we cannot answer that.")
+        self.assertEqual(result.sources, [])
+        self.assertTrue(result.blocked)
         self.ai.generate_response.assert_not_called()
         self.assertEqual(rag.session_manager.get_conversation_history(session_id) or "", "")
 
@@ -66,24 +67,41 @@ class TestRAGSystem(unittest.TestCase):
             rag = RAGSystem(cfg)
             self.ai.generate_response.return_value = "The answer"
 
-            answer, _ = rag.query("What is MCP?")
+            result = rag.query("What is MCP?")
 
-        self.assertEqual(answer, "The answer")
+        self.assertEqual(result.answer, "The answer")
+        self.assertFalse(result.blocked)
 
     def test_wires_search_tool_into_tool_manager(self):
         definitions = self.rag.tool_manager.get_tool_definitions()
         names = [d["function"]["name"] for d in definitions]
         self.assertEqual(names, ["search_course_content"])
 
+    def test_guard_receives_conversation_history(self):
+        cfg = make_config()
+        cfg.GUARD_API_KEY, cfg.GUARD_URL, cfg.GUARD_MODEL = "k", "http://g.test", "g"
+        cfg.GUARD_THRESHOLD = 0.5
+        with patch("rag_system.InputGuard") as guard_cls:
+            guard_cls.return_value.is_safe.return_value = True
+            rag = RAGSystem(cfg)
+            self.ai.generate_response.return_value = "a"
+            session_id = rag.session_manager.create_session()
+            rag.session_manager.add_exchange(session_id, "about MCP", "MCP is...")
+
+            rag.query("and lesson 3?", session_id)
+
+        history = guard_cls.return_value.is_safe.call_args.args[1]
+        self.assertEqual(history[0], {"role": "user", "content": "about MCP"})
+
     def test_query_without_session_returns_answer_and_sources(self):
         def fake_generate(**kwargs):
-            # Simulate the search tool recording sources during the AI call
-            self.rag.search_tool.last_sources = ["Course A - Lesson 1"]
+            # The search tool's sources are collected into the per-request list
+            kwargs["sources_out"].append("Course A - Lesson 1")
             return "The answer"
 
         self.ai.generate_response.side_effect = fake_generate
 
-        answer, sources = self.rag.query("What is MCP?")
+        answer, sources, _ = self.rag.query("What is MCP?")
 
         self.assertEqual(answer, "The answer")
         self.assertEqual(sources, ["Course A - Lesson 1"])
@@ -91,33 +109,26 @@ class TestRAGSystem(unittest.TestCase):
         self.assertIn("What is MCP?", kwargs["query"])
         self.assertIsNone(kwargs["conversation_history"])
 
-    def test_sources_are_reset_after_query(self):
+    def test_each_query_gets_its_own_sources(self):
         def fake_generate(**kwargs):
-            self.rag.search_tool.last_sources = ["X"]
+            kwargs["sources_out"].append("X")
             return "ans"
 
         self.ai.generate_response.side_effect = fake_generate
         self.rag.query("q1")
 
-        self.assertEqual(self.rag.tool_manager.get_last_sources(), [])
-
         self.ai.generate_response.side_effect = None
         self.ai.generate_response.return_value = "ans2"
-        _, sources = self.rag.query("q2")
-        self.assertEqual(sources, [])
+        result = self.rag.query("q2")
+        self.assertEqual(result.sources, [])
 
-    def test_failed_llm_call_clears_sources_and_skips_history(self):
-        def failing_generate(**kwargs):
-            self.rag.search_tool.last_sources = ["Stale"]
-            raise RuntimeError("provider down")
-
-        self.ai.generate_response.side_effect = failing_generate
+    def test_failed_llm_call_skips_history(self):
+        self.ai.generate_response.side_effect = RuntimeError("provider down")
         session_id = self.rag.session_manager.create_session()
 
         with self.assertRaises(RuntimeError):
             self.rag.query("q1", session_id)
 
-        self.assertEqual(self.rag.tool_manager.get_last_sources(), [])
         self.assertEqual(self.rag.session_manager.get_conversation_history(session_id), None)
 
     def test_query_with_session_passes_history_and_records_exchange(self):

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import openai
 from ai_generator import AIGenerator, LLMRateLimitError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from search_tools import ToolResult
 
 
 def make_rate_limit_error(retry_after=None):
@@ -109,15 +110,20 @@ class TestAIGenerator(unittest.TestCase):
         self.bound.invoke.return_value = first
         self.llm.invoke.return_value = make_message("Final answer")
         tool_manager = MagicMock()
-        tool_manager.execute_tool.return_value = "SEARCH RESULT"
+        tool_manager.execute_tool.return_value = ToolResult(
+            "SEARCH RESULT", ["Course A - Lesson 1"]
+        )
 
+        sources: list[str] = []
         result = self.generator.generate_response(
             "q",
             tools=[{"type": "function", "function": {"name": "search_course_content"}}],
             tool_manager=tool_manager,
+            sources_out=sources,
         )
 
         self.assertEqual(result, "Final answer")
+        self.assertEqual(sources, ["Course A - Lesson 1"])
         tool_manager.execute_tool.assert_called_once_with("search_course_content", query="rag")
         self.assertEqual(self.bound.invoke.call_count, 1)
         self.assertEqual(self.llm.invoke.call_count, 1)
@@ -135,7 +141,7 @@ class TestAIGenerator(unittest.TestCase):
         self.bound.invoke.return_value = make_message(tool_calls=calls)
         self.llm.invoke.return_value = make_message("done")
         tool_manager = MagicMock()
-        tool_manager.execute_tool.side_effect = ["R1", "R2"]
+        tool_manager.execute_tool.side_effect = [ToolResult("R1"), ToolResult("R2")]
 
         self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
 
@@ -148,11 +154,27 @@ class TestAIGenerator(unittest.TestCase):
         self.bound.invoke.return_value = make_message(tool_calls=[make_tool_call("x", "noop", {})])
         self.llm.invoke.return_value = make_message("ok")
         tool_manager = MagicMock()
-        tool_manager.execute_tool.return_value = "r"
+        tool_manager.execute_tool.return_value = ToolResult("r")
 
         self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
 
         tool_manager.execute_tool.assert_called_once_with("noop")
+
+    def test_tool_exception_is_returned_to_the_model_not_raised(self):
+        self.bound.invoke.return_value = make_message(
+            tool_calls=[make_tool_call("t", "search_course_content", {"bogus": 1})]
+        )
+        self.llm.invoke.return_value = make_message("recovered")
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.side_effect = TypeError("unexpected keyword 'bogus'")
+
+        result = self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
+
+        self.assertEqual(result, "recovered")
+        follow_up = self.llm.invoke.call_args.args[0]
+        tool_message = [m for m in follow_up if isinstance(m, ToolMessage)][0]
+        self.assertIn("failed", tool_message.content)
+        self.assertNotIn("bogus", tool_message.content)  # internals are not echoed
 
     def test_tool_calls_without_manager_return_content(self):
         self.bound.invoke.return_value = make_message(
@@ -197,7 +219,7 @@ class TestAIGenerator(unittest.TestCase):
         )
         self.llm.invoke.side_effect = make_rate_limit_error(retry_after="3")
         tool_manager = MagicMock()
-        tool_manager.execute_tool.return_value = "r"
+        tool_manager.execute_tool.return_value = ToolResult("r")
 
         with self.assertRaises(LLMRateLimitError) as ctx:
             self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
