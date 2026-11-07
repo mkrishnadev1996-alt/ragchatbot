@@ -61,6 +61,10 @@ Chat requires an account. Open the app, choose **Register** in the login dialog,
 
 Send the token as `Authorization: Bearer <token>`. Login and register are rate-limited per IP.
 
+## LangSmith Tracing (optional)
+
+Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` in `.env` to send a trace per question to LangSmith: the input guard, the LLM calls, the course search tool and the vector retrieval appear as one nested run, tagged with the user id and session id. Traces include user questions and course text; set `LANGSMITH_CAPTURE_IO=false` to send only timing and structure. Tracing is off by default.
+
 ## Running the Application
 
 ### Quick Start

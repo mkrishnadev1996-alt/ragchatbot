@@ -4,12 +4,20 @@ import os
 from ai_generator import AIGenerator
 from document_processor import DocumentProcessor
 from input_guard import InputGuard
+from langsmith import get_current_run_tree, traceable
 from models import Course
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import SessionManager
 from vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+def _annotate_run(**metadata) -> None:
+    """Attach metadata to the current LangSmith run; no-op when tracing is off"""
+    run = get_current_run_tree()
+    if run is not None:
+        run.metadata.update(metadata)
 
 
 class RAGSystem:
@@ -120,6 +128,7 @@ class RAGSystem:
 
         return total_courses, total_chunks
 
+    @traceable(name="rag_query", run_type="chain")
     def query(self, query: str, session_id: str | None = None) -> tuple[str, list[str]]:
         """
         Process a user query using the RAG system with tool-based search.
@@ -136,7 +145,9 @@ class RAGSystem:
         # Reject harmful, jailbreak or out-of-scope input before any main-LLM call.
         # Blocked exchanges are not stored in the session history.
         if self.input_guard and not self.input_guard.is_safe(query):
+            _annotate_run(blocked=True)
             return InputGuard.BLOCKED_MESSAGE, []
+        _annotate_run(blocked=False, model=self.config.LLM_MODEL)
 
         # Create prompt for the AI with clear instructions
         prompt = f"""Answer this question about course materials: {query}"""

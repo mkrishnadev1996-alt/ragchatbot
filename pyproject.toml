@@ -16,6 +16,7 @@ dependencies = [
     "langchain-core>=1.7.6",
     "pyjwt>=2.15.1",
     "email-validator>=2.3.0",
+    "langsmith>=0.14.17",
 ]
 
 [dependency-groups]

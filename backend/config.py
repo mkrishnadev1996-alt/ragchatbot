@@ -27,6 +27,16 @@ class Config:
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24)))
     USERS_DB_PATH: str = os.getenv("USERS_DB_PATH", "./users.db")
 
+    # LangSmith tracing is switched on by LANGSMITH_TRACING / LANGSMITH_API_KEY / LANGSMITH_PROJECT,
+    # which LangChain reads straight from the environment. This flag controls whether prompts,
+    # answers and tool I/O are sent with the traces (false = traces carry timing/structure only).
+    LANGSMITH_CAPTURE_IO: bool = os.getenv("LANGSMITH_CAPTURE_IO", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
     # Embedding model settings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 
@@ -45,3 +55,8 @@ class Config:
 
 
 config = Config()
+
+# Must be set before the first LangSmith client is created (LangSmith reads these from the env)
+if not config.LANGSMITH_CAPTURE_IO:
+    os.environ["LANGSMITH_HIDE_INPUTS"] = "true"
+    os.environ["LANGSMITH_HIDE_OUTPUTS"] = "true"

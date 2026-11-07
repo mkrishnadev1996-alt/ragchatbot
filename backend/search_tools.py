@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from langsmith import traceable
 from vector_store import SearchResults, VectorStore
 
 
@@ -62,7 +63,8 @@ class CourseSearchTool(Tool):
 
     # Explicit parameters are kept so the LLM-facing schema and the signature stay in sync.
     # This intentionally narrows the base class's **kwargs signature.
-    def execute(  # type: ignore[override]
+    @traceable(name="search_course_content", run_type="tool")
+    def execute(
         self, query: str, course_name: str | None = None, lesson_number: int | None = None
     ) -> str:
         """
