@@ -43,6 +43,7 @@ class TestAIGenerator(unittest.TestCase):
             temperature=0,
             max_tokens=1600,
             max_retries=3,
+            timeout=60,
         )
 
     def test_direct_answer_without_tools(self):

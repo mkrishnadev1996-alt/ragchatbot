@@ -62,11 +62,28 @@ class TestChunkText(unittest.TestCase):
 
         self.assertTrue(chunks[1].startswith("Gamma is third."))
 
-    def test_oversized_sentence_still_emitted(self):
-        processor = DocumentProcessor(chunk_size=10, chunk_overlap=0)
+    def test_oversized_sentence_is_split_to_chunk_size(self):
+        processor = DocumentProcessor(chunk_size=12, chunk_overlap=0)
         long_sentence = "This single sentence is far longer than ten characters."
         chunks = processor.chunk_text(long_sentence)
-        self.assertEqual(chunks, [long_sentence])
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 12 for c in chunks), chunks)
+        # Nothing is lost: splitting happens at spaces, so the words are all still there
+        self.assertEqual(" ".join(chunks), long_sentence)
+
+    def test_word_longer_than_chunk_size_is_hard_split(self):
+        processor = DocumentProcessor(chunk_size=5, chunk_overlap=0)
+        chunks = processor.chunk_text("abcdefghijkl")
+        self.assertEqual(chunks, ["abcde", "fghij", "kl"])
+
+    def test_oversized_sentence_between_normal_ones(self):
+        processor = DocumentProcessor(chunk_size=40, chunk_overlap=0)
+        long = "word " * 20
+        text = f"Short one. {long.strip()}. Another short."
+        chunks = processor.chunk_text(text)
+        self.assertTrue(all(len(c) <= 40 for c in chunks), chunks)
+        self.assertTrue(chunks[0].startswith("Short one."))
+        self.assertTrue(chunks[-1].endswith("Another short."))
 
 
 class TestProcessCourseDocument(unittest.TestCase):

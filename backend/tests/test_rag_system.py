@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from rag_system import RAGSystem
 
+SMALL_COURSE = "Course Title: C\nCourse Link: x\nCourse Instructor: Y\n\nLesson 0: A\nText here.\n"
+
 
 def make_config():
     return SimpleNamespace(
@@ -214,6 +216,50 @@ class TestRAGSystem(unittest.TestCase):
         added_course = self.vector_store.add_course_metadata.call_args.args[0]
         self.assertEqual(added_course.title, "Brand New")
         self.vector_store.add_course_content.assert_called_once()
+
+    def _write_course(self, folder, name, text):
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_course_without_chunks_is_not_added_to_the_catalog(self):
+        self.vector_store.get_existing_course_titles.return_value = []
+        with tempfile.TemporaryDirectory() as folder:
+            self._write_course(
+                folder, "empty.txt", "Course Title: Empty\nCourse Link: x\nCourse Instructor: Y\n"
+            )
+            courses, chunks = self.rag.add_course_folder(folder)
+
+        self.assertEqual((courses, chunks), (0, 0))
+        self.vector_store.add_course_metadata.assert_not_called()
+
+    def test_content_is_written_before_the_catalog_entry(self):
+        self.vector_store.get_existing_course_titles.return_value = []
+        order = []
+        self.vector_store.add_course_content.side_effect = lambda *_: order.append("content")
+        self.vector_store.add_course_metadata.side_effect = lambda *_: order.append("metadata")
+        with tempfile.TemporaryDirectory() as folder:
+            self._write_course(
+                folder,
+                "c.txt",
+                SMALL_COURSE,
+            )
+            self.rag.add_course_folder(folder)
+
+        self.assertEqual(order, ["content", "metadata"])
+
+    def test_failed_ingestion_rolls_back_content_and_leaves_no_catalog_entry(self):
+        self.vector_store.get_existing_course_titles.return_value = []
+        self.vector_store.add_course_metadata.side_effect = RuntimeError("disk full")
+        with tempfile.TemporaryDirectory() as folder:
+            self._write_course(
+                folder,
+                "c.txt",
+                SMALL_COURSE,
+            )
+            courses, _ = self.rag.add_course_folder(folder)
+
+        self.assertEqual(courses, 0)
+        self.vector_store.delete_course_content.assert_called_once_with("C")
 
     def test_add_course_folder_clear_existing_resets_store(self):
         with tempfile.TemporaryDirectory() as folder:

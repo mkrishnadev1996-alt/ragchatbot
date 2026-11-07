@@ -18,6 +18,7 @@ class Config:
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1600"))  # Max tokens per completion
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0"))
     LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))  # SDK retries on 429/5xx
+    LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "60"))  # Seconds per LLM request
 
     # Input guard (decision model on OpenRouter). Disabled when GUARD_API_KEY is empty.
     GUARD_API_KEY: str = os.getenv("GUARD_API_KEY", "")
@@ -54,6 +55,10 @@ class Config:
     CHUNK_SIZE: int = 800  # Size of text chunks for vector storage
     CHUNK_OVERLAP: int = 100  # Characters to overlap between chunks
     MAX_RESULTS: int = 5  # Maximum search results to return
+    # Course-name lookups farther than this (L2 distance, all-MiniLM-L6-v2) resolve to "not
+    # found". Measured on the current catalog: real names/keywords 0.16-1.59, unrelated
+    # words 1.61-1.84.
+    COURSE_MATCH_MAX_DISTANCE: float = float(os.getenv("COURSE_MATCH_MAX_DISTANCE", "1.6"))
     MAX_HISTORY: int = 2  # Number of conversation messages to remember
     MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))  # Max chars per question
 
