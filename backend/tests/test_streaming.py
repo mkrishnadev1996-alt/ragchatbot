@@ -50,8 +50,7 @@ class TestAstreamResponse(unittest.IsolatedAsyncioTestCase):
         tool_chunk = chunk(
             tool_call_chunks=[{"name": "search", "args": '{"query": "x"}', "id": "c1", "index": 0}]
         )
-        self.bound.astream.return_value = agen([tool_chunk])
-        self.llm.astream.return_value = agen([chunk("An"), chunk("swer")])
+        self.bound.astream.side_effect = [agen([tool_chunk]), agen([chunk("An"), chunk("swer")])]
         manager = MagicMock()
         manager.execute_tool.return_value = ToolResult("text", [Source(label="L", url=None)])
         sources: list[Source] = []
@@ -65,6 +64,65 @@ class TestAstreamResponse(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out, ["An", "swer"])
         manager.execute_tool.assert_called_once_with("search", query="x")
         self.assertEqual([s.label for s in sources], ["L"])
+
+    async def test_several_tool_rounds_then_answer_with_separator_after_interim_text(self):
+        def tool(call_id, query):
+            return chunk(
+                tool_call_chunks=[
+                    {
+                        "name": "search",
+                        "args": json.dumps({"query": query}),
+                        "id": call_id,
+                        "index": 0,
+                    }
+                ]
+            )
+
+        self.bound.astream.side_effect = [
+            agen([chunk("Let me check."), tool("c1", "one")]),
+            agen([tool("c2", "two")]),
+            agen([chunk("Answer")]),
+        ]
+        manager = MagicMock()
+        manager.execute_tool.side_effect = [
+            ToolResult("R1", [Source(label="A", url=None)]),
+            ToolResult("R2", [Source(label="B", url=None)]),
+        ]
+        sources: list[Source] = []
+
+        out = await collect(
+            self.generator.astream_response(
+                "q", tools=[{"type": "function"}], tool_manager=manager, sources_out=sources
+            )
+        )
+
+        self.assertEqual(out, ["Let me check.", "\n\n", "Answer"])
+        self.assertEqual(
+            [c.kwargs for c in manager.execute_tool.call_args_list],
+            [{"query": "one"}, {"query": "two"}],
+        )
+        self.assertEqual([s.label for s in sources], ["A", "B"])
+        self.llm.astream.assert_not_called()
+
+    async def test_round_cap_streams_the_last_call_without_tools(self):
+        generator = AIGenerator(
+            api_key="k", base_url="http://llm.test", model="m", max_tool_rounds=1
+        )
+        tool_chunk = chunk(
+            tool_call_chunks=[{"name": "search", "args": '{"query": "x"}', "id": "c1", "index": 0}]
+        )
+        self.bound.astream.side_effect = [agen([tool_chunk])]
+        self.llm.astream.return_value = agen([chunk("Final")])
+        manager = MagicMock()
+        manager.execute_tool.return_value = ToolResult("R")
+
+        out = await collect(
+            generator.astream_response("q", tools=[{"type": "function"}], tool_manager=manager)
+        )
+
+        self.assertEqual(out, ["Final"])
+        messages = self.llm.astream.call_args.args[0]
+        self.assertEqual(messages[-1].content, AIGenerator.TOOL_LIMIT_NOTICE)
 
     async def test_truncation_notice_is_last(self):
         self.llm.astream.return_value = agen(

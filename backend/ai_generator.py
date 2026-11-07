@@ -37,7 +37,9 @@ content with access to a comprehensive search tool for course information.
 Search Tool Usage:
 - Use the search tool **only** for questions about specific course content
   or detailed educational materials
-- **One search per query maximum**
+- Search again when one search is not enough (comparing courses, questions with several
+  parts, or a first search that found nothing relevant). Never repeat a search you
+  already ran, and stop searching as soon as you can answer
 - Synthesize search results into accurate, fact-based responses
 - If search yields no results, state this clearly without offering alternatives
 
@@ -58,6 +60,13 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
 
+    # Sent after the last allowed tool round, so the final (tool-less) call answers instead of
+    # trying to call a tool again (providers reject a tool call when no tools are offered)
+    TOOL_LIMIT_NOTICE = (
+        "Searching is no longer available. Answer the question now using only the "
+        "information already retrieved."
+    )
+
     TRUNCATION_NOTICE = (
         "\n\n*(This answer was cut off because it reached the length limit. "
         "Ask a narrower question to get the rest.)*"
@@ -72,6 +81,7 @@ Provide only the direct answer to what was asked.
         temperature: float = 0,
         max_retries: int = 3,
         timeout: float | None = 60,
+        max_tool_rounds: int = 3,
     ):
         # max_retries is passed to the OpenAI SDK, which retries 429s and 5xx with backoff
         self.llm = ChatOpenAI(
@@ -84,6 +94,9 @@ Provide only the direct answer to what was asked.
             timeout=timeout,
         )
         self.model = model
+        # Safety cap on model -> tools -> model rounds (cost and runaway-loop guard);
+        # the model may search as often as it needs up to this many rounds.
+        self.max_tool_rounds = max(1, max_tool_rounds)
 
     def generate_response(
         self,
@@ -111,14 +124,21 @@ Provide only the direct answer to what was asked.
         messages = self._build_messages(query, conversation_history)
 
         # Bind tools if available; otherwise call the plain model
-        runnable = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+        bound = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+        runnable = bound
         response = self._invoke(runnable, messages)
 
-        # Handle tool execution if needed
-        if response.tool_calls and tool_manager:
-            return self._handle_tool_execution(response, messages, tool_manager, sources_out)
+        # Agentic loop: while the model asks for tools, run them and call it again. Up to
+        # max_tool_rounds rounds; the call after the last round has no tools.
+        rounds = 0
+        while response.tool_calls and tool_manager and rounds < self.max_tool_rounds:
+            messages = self._run_tools(response, messages, tool_manager, sources_out)
+            rounds += 1
+            if rounds >= self.max_tool_rounds:
+                messages = [*messages, HumanMessage(content=self.TOOL_LIMIT_NOTICE)]
+                runnable = self.llm
+            response = self._invoke(runnable, messages)
 
-        # Return direct response
         return self._text(response)
 
     async def astream_response(
@@ -131,29 +151,42 @@ Provide only the direct answer to what was asked.
     ) -> AsyncIterator[str]:
         """Async twin of generate_response: yields the answer text as it is produced.
 
-        Same one-tool-round limit: the first call may request tools (their results are
-        appended to sources_out), the follow-up call streams the final text. The LLM calls
-        are natively async (`astream`); the blocking tool execution (ChromaDB) runs in a
-        worker thread so the event loop stays free. A truncation notice is yielded last if
-        the provider stopped at max_tokens. LLMRateLimitError is raised from the first
-        `anext()` when the provider rejects the initial request.
+        Same agentic loop (up to max_tool_rounds rounds, the call after the last one has no
+        tools). Every model call is streamed; if a call that goes on to use tools also wrote
+        some text, the next call's text starts after a blank line. The LLM calls are natively
+        async (`astream`); the blocking tool execution (vector search) runs in a worker thread
+        so the event loop stays free. A truncation notice is yielded last if the provider
+        stopped at max_tokens. LLMRateLimitError is raised from the first `anext()` when the
+        provider rejects the initial request.
         """
         messages = self._build_messages(query, conversation_history)
-        runnable = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+        bound = self.llm.bind_tools(tools, tool_choice="auto") if tools else self.llm
+        runnable = bound
 
-        first: list[AIMessage] = []
-        async for delta in self._astream(runnable, messages, first):
-            yield delta
-        final = first[0]
+        rounds = 0
+        spoke = False  # an earlier call already produced text
+        while True:
+            result: list[AIMessage] = []
+            wrote = False
+            async for delta in self._astream(runnable, messages, result):
+                if spoke and not wrote:
+                    yield "\n\n"
+                wrote = True
+                yield delta
+            spoke = spoke or wrote
+            final = result[0]
 
-        if final.tool_calls and tool_manager:
-            follow_up = await asyncio.to_thread(
+            if not (final.tool_calls and tool_manager and rounds < self.max_tool_rounds):
+                break
+            messages = await asyncio.to_thread(
                 self._run_tools, final, messages, tool_manager, sources_out
             )
-            second: list[AIMessage] = []
-            async for delta in self._astream(self.llm, follow_up, second):
-                yield delta
-            final = second[0]
+            rounds += 1
+            if rounds >= self.max_tool_rounds:
+                messages = [*messages, HumanMessage(content=self.TOOL_LIMIT_NOTICE)]
+                runnable = self.llm
+            else:
+                runnable = bound
 
         notice = self._truncation_notice(final)
         if notice:
@@ -171,31 +204,6 @@ Provide only the direct answer to what was asked.
         messages.append(HumanMessage(content=query))
         return messages
 
-    def _handle_tool_execution(
-        self,
-        response: AIMessage,
-        messages: list[BaseMessage],
-        tool_manager,
-        sources_out: list[Source] | None = None,
-    ):
-        """
-        Handle execution of tool calls and get follow-up response.
-
-        Args:
-            response: The AI message containing tool call requests
-            messages: Messages sent in the initial request (system + history + user query)
-            tool_manager: Manager to execute tools
-            sources_out: Optional list that sources from tool results are appended to
-
-        Returns:
-            Final response text after tool execution
-        """
-        follow_up = self._run_tools(response, messages, tool_manager, sources_out)
-
-        # Final call on the unbound model: no tools, so this is the last round
-        final_response = self._invoke(self.llm, follow_up)
-        return self._text(final_response)
-
     def _run_tools(
         self,
         response: AIMessage,
@@ -210,13 +218,19 @@ Provide only the direct answer to what was asked.
         for tool_call in response.tool_calls:
             name, arguments = tool_call["name"], tool_call["args"]
             logger.info("Executing tool %s", name)
+            logger.debug("Tool %s arguments: %s", name, arguments)  # may hold user text
             try:
                 if not isinstance(arguments, dict):
                     raise TypeError("tool arguments must be a JSON object")
                 result = tool_manager.execute_tool(name, **arguments)
                 text = result.text
                 if sources_out is not None:
-                    sources_out.extend(result.sources)
+                    # Several rounds may find the same lesson: list each citation once
+                    seen = {(s.label, s.url) for s in sources_out}
+                    for source in result.sources:
+                        if (source.label, source.url) not in seen:
+                            seen.add((source.label, source.url))
+                            sources_out.append(source)
             except Exception as e:
                 # Bad arguments or a failing tool must not fail the request: hand the error
                 # to the model so it can answer without the tool or retry differently.

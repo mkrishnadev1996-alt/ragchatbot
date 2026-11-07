@@ -131,11 +131,13 @@ app.add_middleware(
 )
 
 
+# Shared state backends (declared first: the pgvector vector store uses the same PostgreSQL)
+database = open_database(config.DATABASE_URL, config.USERS_DB_PATH, config.DATABASE_POOL_SIZE)
+
 # Initialize RAG system
-rag_system = RAGSystem(config)
+rag_system = RAGSystem(config, database=database)
 
 # Authentication. The router must be included before the catch-all static mount below.
-database = open_database(config.DATABASE_URL, config.USERS_DB_PATH, config.DATABASE_POOL_SIZE)
 redis_client = get_redis(config.REDIS_URL) if config.REDIS_URL else None
 
 

@@ -106,11 +106,10 @@ class TestAIGenerator(unittest.TestCase):
             ],
         )
 
-    def test_tool_call_runs_tool_and_makes_follow_up_call_without_tools(self):
+    def test_tool_call_runs_tool_then_calls_the_model_again_with_tools_available(self):
         tool_call = make_tool_call("call_1", "search_course_content", {"query": "rag"})
         first = make_message(tool_calls=[tool_call])
-        self.bound.invoke.return_value = first
-        self.llm.invoke.return_value = make_message("Final answer")
+        self.bound.invoke.side_effect = [first, make_message("Final answer")]
         tool_manager = MagicMock()
         tool_manager.execute_tool.return_value = ToolResult(
             "SEARCH RESULT", [Source(label="Course A - Lesson 1")]
@@ -127,10 +126,10 @@ class TestAIGenerator(unittest.TestCase):
         self.assertEqual(result, "Final answer")
         self.assertEqual([x.label for x in sources], ["Course A - Lesson 1"])
         tool_manager.execute_tool.assert_called_once_with("search_course_content", query="rag")
-        self.assertEqual(self.bound.invoke.call_count, 1)
-        self.assertEqual(self.llm.invoke.call_count, 1)
+        self.assertEqual(self.bound.invoke.call_count, 2)  # the follow-up may search again
+        self.llm.invoke.assert_not_called()
 
-        follow_up = self.llm.invoke.call_args.args[0]
+        follow_up = self.bound.invoke.call_args.args[0]
         self.assertEqual(follow_up[1], HumanMessage(content="q"))
         self.assertIs(follow_up[2], first)
         self.assertEqual(follow_up[3], ToolMessage(content="SEARCH RESULT", tool_call_id="call_1"))
@@ -140,21 +139,22 @@ class TestAIGenerator(unittest.TestCase):
             make_tool_call("a", "search_course_content", {"query": "one"}),
             make_tool_call("b", "search_course_content", {"query": "two"}),
         ]
-        self.bound.invoke.return_value = make_message(tool_calls=calls)
-        self.llm.invoke.return_value = make_message("done")
+        self.bound.invoke.side_effect = [make_message(tool_calls=calls), make_message("done")]
         tool_manager = MagicMock()
         tool_manager.execute_tool.side_effect = [ToolResult("R1"), ToolResult("R2")]
 
         self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
 
         self.assertEqual(tool_manager.execute_tool.call_count, 2)
-        follow_up = self.llm.invoke.call_args.args[0]
+        follow_up = self.bound.invoke.call_args.args[0]
         outputs = [m for m in follow_up if isinstance(m, ToolMessage)]
         self.assertEqual([(o.tool_call_id, o.content) for o in outputs], [("a", "R1"), ("b", "R2")])
 
     def test_empty_tool_arguments_are_treated_as_no_args(self):
-        self.bound.invoke.return_value = make_message(tool_calls=[make_tool_call("x", "noop", {})])
-        self.llm.invoke.return_value = make_message("ok")
+        self.bound.invoke.side_effect = [
+            make_message(tool_calls=[make_tool_call("x", "noop", {})]),
+            make_message("ok"),
+        ]
         tool_manager = MagicMock()
         tool_manager.execute_tool.return_value = ToolResult("r")
 
@@ -163,17 +163,17 @@ class TestAIGenerator(unittest.TestCase):
         tool_manager.execute_tool.assert_called_once_with("noop")
 
     def test_tool_exception_is_returned_to_the_model_not_raised(self):
-        self.bound.invoke.return_value = make_message(
-            tool_calls=[make_tool_call("t", "search_course_content", {"bogus": 1})]
-        )
-        self.llm.invoke.return_value = make_message("recovered")
+        self.bound.invoke.side_effect = [
+            make_message(tool_calls=[make_tool_call("t", "search_course_content", {"bogus": 1})]),
+            make_message("recovered"),
+        ]
         tool_manager = MagicMock()
         tool_manager.execute_tool.side_effect = TypeError("unexpected keyword 'bogus'")
 
         result = self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
 
         self.assertEqual(result, "recovered")
-        follow_up = self.llm.invoke.call_args.args[0]
+        follow_up = self.bound.invoke.call_args.args[0]
         tool_message = [m for m in follow_up if isinstance(m, ToolMessage)][0]
         self.assertIn("failed", tool_message.content)
         self.assertNotIn("bogus", tool_message.content)  # internals are not echoed
@@ -216,10 +216,10 @@ class TestAIGenerator(unittest.TestCase):
         self.assertIsNone(ctx.exception.retry_after)
 
     def test_rate_limit_on_tool_follow_up_call_is_also_translated(self):
-        self.bound.invoke.return_value = make_message(
-            tool_calls=[make_tool_call("c", "search_course_content", {})]
-        )
-        self.llm.invoke.side_effect = make_rate_limit_error(retry_after="3")
+        self.bound.invoke.side_effect = [
+            make_message(tool_calls=[make_tool_call("c", "search_course_content", {})]),
+            make_rate_limit_error(retry_after="3"),
+        ]
         tool_manager = MagicMock()
         tool_manager.execute_tool.return_value = ToolResult("r")
 
@@ -227,6 +227,99 @@ class TestAIGenerator(unittest.TestCase):
             self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
 
         self.assertEqual(ctx.exception.retry_after, 3.0)
+
+    def test_the_model_can_search_several_times_before_answering(self):
+        first = make_message(tool_calls=[make_tool_call("a", "search", {"query": "one"})])
+        second = make_message(tool_calls=[make_tool_call("b", "search", {"query": "two"})])
+        self.bound.invoke.side_effect = [first, second, make_message("Combined answer")]
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.side_effect = [
+            ToolResult("R1", [Source(label="A - Lesson 1"), Source(label="C - Lesson 3")]),
+            # B is new; A repeats from the first round and must not be listed twice
+            ToolResult("R2", [Source(label="B - Lesson 2"), Source(label="A - Lesson 1")]),
+        ]
+        sources: list[Source] = []
+
+        result = self.generator.generate_response(
+            "q", tools=[{}], tool_manager=tool_manager, sources_out=sources
+        )
+
+        self.assertEqual(result, "Combined answer")
+        self.assertEqual(
+            [c.kwargs for c in tool_manager.execute_tool.call_args_list],
+            [{"query": "one"}, {"query": "two"}],
+        )
+        self.assertEqual(
+            [s.label for s in sources], ["A - Lesson 1", "C - Lesson 3", "B - Lesson 2"]
+        )
+        self.assertEqual(self.bound.invoke.call_count, 3)
+        self.llm.invoke.assert_not_called()
+        last_call = self.bound.invoke.call_args.args[0]
+        self.assertEqual(
+            [m for m in last_call if isinstance(m, ToolMessage)],
+            [
+                ToolMessage(content="R1", tool_call_id="a"),
+                ToolMessage(content="R2", tool_call_id="b"),
+            ],
+        )
+
+    def test_round_cap_makes_the_last_call_tool_less_with_an_answer_now_notice(self):
+        generator = AIGenerator(
+            api_key="key", base_url="http://llm.test", model="m", max_tool_rounds=2
+        )
+        tool_msg = make_message(tool_calls=[make_tool_call("a", "search", {"query": "x"})])
+        self.bound.invoke.side_effect = [tool_msg, tool_msg]
+        self.llm.invoke.return_value = make_message("Best effort answer")
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.return_value = ToolResult("R")
+
+        result = generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
+
+        self.assertEqual(result, "Best effort answer")
+        self.assertEqual(tool_manager.execute_tool.call_count, 2)
+        self.assertEqual(self.bound.invoke.call_count, 2)
+        self.assertEqual(self.llm.invoke.call_count, 1)
+        final_messages = self.llm.invoke.call_args.args[0]
+        self.assertEqual(final_messages[-1], HumanMessage(content=AIGenerator.TOOL_LIMIT_NOTICE))
+
+    def test_a_single_round_cap_matches_the_old_one_search_behaviour(self):
+        generator = AIGenerator(
+            api_key="key", base_url="http://llm.test", model="m", max_tool_rounds=1
+        )
+        self.bound.invoke.return_value = make_message(
+            tool_calls=[make_tool_call("a", "search", {"query": "x"})]
+        )
+        self.llm.invoke.return_value = make_message("done")
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.return_value = ToolResult("R")
+
+        generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
+
+        self.assertEqual(self.bound.invoke.call_count, 1)
+        self.assertEqual(self.llm.invoke.call_count, 1)
+        tool_manager.execute_tool.assert_called_once()
+
+    def test_round_cap_is_at_least_one(self):
+        generator = AIGenerator(
+            api_key="key", base_url="http://llm.test", model="m", max_tool_rounds=0
+        )
+        self.assertEqual(generator.max_tool_rounds, 1)
+
+    def test_default_round_cap_and_prompt_no_longer_limit_searching(self):
+        self.assertEqual(self.generator.max_tool_rounds, 3)
+        self.assertNotIn("One search per query", AIGenerator.SYSTEM_PROMPT)
+        self.assertIn("Search again", AIGenerator.SYSTEM_PROMPT)
+
+    def test_truncation_notice_comes_from_the_final_response(self):
+        first = make_message(tool_calls=[make_tool_call("a", "search", {"query": "x"})])
+        final = AIMessage(content="cut", response_metadata={"finish_reason": "length"})
+        self.bound.invoke.side_effect = [first, final]
+        tool_manager = MagicMock()
+        tool_manager.execute_tool.return_value = ToolResult("R")
+
+        result = self.generator.generate_response("q", tools=[{}], tool_manager=tool_manager)
+
+        self.assertEqual(result, "cut" + AIGenerator.TRUNCATION_NOTICE)
 
     def test_other_errors_are_not_translated(self):
         self.llm.invoke.side_effect = RuntimeError("network down")

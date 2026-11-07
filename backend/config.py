@@ -22,6 +22,9 @@ class Config:
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0"))
     LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))  # SDK retries on 429/5xx
     LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "60"))  # Seconds per LLM request
+    # The model may call the search tool repeatedly (model -> tool -> model rounds); this
+    # caps the rounds per question as a cost/runaway guard. 1 = the old single search.
+    MAX_TOOL_ROUNDS: int = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
 
     # Input guard (decision model on OpenRouter). Disabled when GUARD_API_KEY is empty.
     GUARD_API_KEY: str = os.getenv("GUARD_API_KEY", "")
@@ -52,8 +55,22 @@ class Config:
     # answers and tool I/O are sent with the traces (false = traces carry timing/structure only).
     LANGSMITH_CAPTURE_IO: bool = os.getenv("LANGSMITH_CAPTURE_IO", "true").lower() not in _FALSE
 
-    # Embedding model settings
-    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    # Vector store backend: "chroma" (embedded ChromaDB, single process) or "pgvector"
+    # (PostgreSQL + pgvector, shared by any number of processes; needs DATABASE_URL).
+    VECTOR_BACKEND: str = os.getenv("VECTOR_BACKEND", "chroma")
+    # Hybrid search (vector + keyword, fused with RRF). pgvector backend only.
+    HYBRID_SEARCH: bool = os.getenv("HYBRID_SEARCH", "true").lower() not in _FALSE
+    # The keyword side ignores words found in more than this fraction of all chunks.
+    KEYWORD_MAX_DOC_FRACTION: float = float(os.getenv("KEYWORD_MAX_DOC_FRACTION", "0.05"))
+
+    # Embeddings. "local" runs a sentence-transformers model in the process; "openai" calls an
+    # OpenAI-compatible /embeddings endpoint (pgvector backend only). Changing the model or
+    # dimensions requires re-indexing: `python ingest.py --clear`.
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "local")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "")
+    EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "")
+    EMBEDDING_DIMENSIONS: int = int(os.getenv("EMBEDDING_DIMENSIONS", "0"))  # openai provider
 
     # Document processing settings
     CHUNK_SIZE: int = 800  # Size of text chunks for vector storage

@@ -4,7 +4,8 @@ from typing import Any
 
 from langsmith import traceable
 from models import Source
-from vector_store import SearchResults, VectorStore
+from search_results import SearchResults
+from vector_backend import VectorStoreBackend
 
 
 @dataclass
@@ -36,7 +37,7 @@ class Tool(ABC):
 class CourseSearchTool(Tool):
     """Tool for searching course content with semantic course name matching"""
 
-    def __init__(self, vector_store: VectorStore):
+    def __init__(self, vector_store: VectorStoreBackend):
         self.store = vector_store
 
     def get_tool_definition(self) -> dict[str, Any]:
@@ -78,7 +79,10 @@ class CourseSearchTool(Tool):
     # This intentionally narrows the base class's **kwargs signature.
     @traceable(name="search_course_content", run_type="tool")
     def execute(
-        self, query: str, course_name: str | None = None, lesson_number: int | None = None
+        self,
+        query: str,
+        course_name: str | None = None,
+        lesson_number: int | str | None = None,
     ) -> ToolResult:
         """
         Execute the search tool with given parameters.
@@ -91,6 +95,16 @@ class CourseSearchTool(Tool):
         Returns:
             Formatted search results (with their sources) or an error message
         """
+
+        # Some models send the lesson as a string ("3") although the schema says integer, and
+        # a string would match nothing in a strictly typed metadata filter.
+        if isinstance(lesson_number, str):
+            try:
+                lesson_number = int(lesson_number.strip())
+            except ValueError:
+                return ToolResult(
+                    f"Error: lesson_number must be a whole number, got {lesson_number!r}."
+                )
 
         # Use the vector store's unified search interface
         results = self.store.search(

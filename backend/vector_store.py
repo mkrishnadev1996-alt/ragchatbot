@@ -1,56 +1,16 @@
-import hashlib
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any
 
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langsmith import traceable
-from models import Course, CourseChunk
+from models import Course, CourseChunk, chunk_id
+from search_results import SearchResults, _retrieval_output
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class SearchResults:
-    """Container for search results with metadata"""
-
-    documents: list[str]
-    metadata: list[dict[str, Any]]
-    distances: list[float]
-    error: str | None = None
-
-    @classmethod
-    def from_chroma(cls, chroma_results: dict) -> "SearchResults":
-        """Create SearchResults from ChromaDB query results"""
-        return cls(
-            documents=chroma_results["documents"][0] if chroma_results["documents"] else [],
-            metadata=chroma_results["metadatas"][0] if chroma_results["metadatas"] else [],
-            distances=chroma_results["distances"][0] if chroma_results["distances"] else [],
-        )
-
-    @classmethod
-    def empty(cls, error_msg: str) -> "SearchResults":
-        """Create empty results with error message"""
-        return cls(documents=[], metadata=[], distances=[], error=error_msg)
-
-    def is_empty(self) -> bool:
-        """Check if results are empty"""
-        return len(self.documents) == 0
-
-
-def _retrieval_output(results: "SearchResults") -> dict[str, Any]:
-    """Shape results for LangSmith's retriever view (page_content + metadata per document)"""
-    # Tolerant of None metadata / uneven lists: tracing must never break a search
-    documents = [
-        {"page_content": doc, "metadata": {**(meta or {}), "distance": dist}}
-        for doc, meta, dist in zip(  # noqa: B905
-            results.documents, results.metadata, results.distances
-        )
-    ]
-    return {"documents": documents, "error": results.error}
+__all__ = ["SearchResults", "VectorStore"]
 
 
 class VectorStore:
@@ -220,8 +180,7 @@ class VectorStore:
     @staticmethod
     def _chunk_id(chunk: CourseChunk) -> str:
         """Unique chunk id: a hash of the title (so "A B" and "A_B" differ) plus the index"""
-        digest = hashlib.sha256(chunk.course_title.encode("utf-8")).hexdigest()[:16]
-        return f"{digest}_{chunk.chunk_index}"
+        return chunk_id(chunk.course_title, chunk.chunk_index)
 
     def delete_course_content(self, course_title: str) -> None:
         """Remove every content chunk of a course (used to roll back a failed ingestion)"""

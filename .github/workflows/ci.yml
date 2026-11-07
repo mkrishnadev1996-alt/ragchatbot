@@ -8,10 +8,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Real PostgreSQL so the store tests run on both backends
+    # Real PostgreSQL with pgvector so the store and vector tests run on it too
     services:
       postgres:
-        image: postgres:17-alpine
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_PASSWORD: pw
           POSTGRES_DB: rag

@@ -59,6 +59,17 @@ class TestCourseSearchTool(unittest.TestCase):
             query="embeddings", course_name="MCP", lesson_number=2
         )
 
+    def test_execute_converts_a_numeric_string_lesson_number(self):
+        # Seen from NVIDIA's nemotron: {"lesson_number": "3"} although the schema says integer
+        self.store.search.return_value = make_results([], [])
+        self.tool.execute(query="q", course_name="MCP", lesson_number=" 3 ")
+        self.store.search.assert_called_once_with(query="q", course_name="MCP", lesson_number=3)
+
+    def test_execute_rejects_a_non_numeric_lesson_number_without_searching(self):
+        result = self.tool.execute(query="q", lesson_number="two")
+        self.assertIn("whole number", result.text)
+        self.store.search.assert_not_called()
+
     def test_execute_returns_store_error_verbatim(self):
         self.store.search.return_value = SearchResults.empty("No course found matching 'zzz'")
         result = self.tool.execute(query="x", course_name="zzz")

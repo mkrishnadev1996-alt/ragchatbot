@@ -1,3 +1,5 @@
+import hashlib
+
 from pydantic import BaseModel, Field
 
 
@@ -32,3 +34,9 @@ class CourseChunk(BaseModel):
     course_title: str  # Which course this chunk belongs to
     lesson_number: int | None = None  # Which lesson this chunk is from
     chunk_index: int  # Position of this chunk in the document
+
+
+def chunk_id(course_title: str, chunk_index: int) -> str:
+    """Unique chunk id: a hash of the title (so "A B" and "A_B" differ) plus the index"""
+    digest = hashlib.sha256(course_title.encode("utf-8")).hexdigest()[:16]
+    return f"{digest}_{chunk_index}"
