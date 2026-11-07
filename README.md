@@ -49,7 +49,7 @@ An optional input guard screens every question before it reaches the main LLM. I
 
 ## Accounts and API
 
-Chat requires an account. Open the app, choose **Register** in the login dialog, enter an email and a password of at least 8 characters, and you are logged in; later visits use **Log in**. Your email and a **Log out** link appear in the top-right corner. Logging out only clears the token in your browser; it stays valid until it expires (`JWT_EXPIRE_MINUTES`, default 1440).
+Chat requires an account. Open the app, choose **Register** in the login dialog, enter an email and a password of at least 8 characters, and you are logged in; later visits use **Log in**. Your email and a **Log out** link appear in the top-right corner. Refreshing the page, or logging out and back in, brings back the messages of your current conversation; use the **Clear conversation** button in the left sidebar to start a new one. Logging out only clears the token in your browser; it stays valid until it expires (`JWT_EXPIRE_MINUTES`, default 1440).
 
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
@@ -57,6 +57,8 @@ Chat requires an account. Open the app, choose **Register** in the login dialog,
 | `POST /api/auth/login` | none | Returns `{token, user}` (401 on bad credentials) |
 | `GET /api/auth/me` | bearer | Current user |
 | `POST /api/query` | bearer | Ask a question (401 without a valid token) |
+| `POST /api/feedback` | bearer | Thumbs up/down on an answer |
+| `GET /api/messages` | bearer | Your saved messages; optional `?session_id=` limits to one session |
 | `GET /api/courses` | none | Course catalog stats |
 
 Send the token as `Authorization: Bearer <token>`. Login and register are rate-limited per IP.
