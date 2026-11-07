@@ -19,6 +19,7 @@ from feedback import create_feedback_router
 from feedback_store import FeedbackStore
 from message_store import MessageStore
 from messages import create_messages_router
+from models import Source
 from pydantic import BaseModel, ConfigDict, Field
 from rag_system import RAGSystem
 from user_store import User, UserStore
@@ -129,7 +130,7 @@ class QueryResponse(BaseModel):
     """Response model for course queries"""
 
     answer: str
-    sources: list[str]
+    sources: list[Source]
     session_id: str
     message_id: str  # identifies this answer when the client sends feedback on it
 

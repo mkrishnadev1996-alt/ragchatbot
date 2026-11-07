@@ -9,6 +9,13 @@ class Lesson(BaseModel):
     lesson_link: str | None = None  # URL link to the lesson
 
 
+class Source(BaseModel):
+    """A citation shown under an answer: a label plus a link when the course data has one"""
+
+    label: str  # "Course title - Lesson N"
+    url: str | None = None
+
+
 class Course(BaseModel):
     """Represents a complete course with its lessons"""
 

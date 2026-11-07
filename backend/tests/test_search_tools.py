@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
+from models import Source
 from search_tools import CourseSearchTool, Tool, ToolManager, ToolResult
 from vector_store import SearchResults
 
@@ -27,6 +28,8 @@ class FakeTool(Tool):
 class TestCourseSearchTool(unittest.TestCase):
     def setUp(self):
         self.store = MagicMock()
+        self.store.get_lesson_link.return_value = None
+        self.store.get_course_link.return_value = None
         self.tool = CourseSearchTool(self.store)
 
     def test_definition_exposes_search_function_with_required_query(self):
@@ -97,7 +100,7 @@ class TestCourseSearchTool(unittest.TestCase):
         )
         result = self.tool.execute(query="x")
         self.assertEqual(result.text, "[Plain Course]\nCourse-level text.")
-        self.assertEqual(result.sources, ["Plain Course"])
+        self.assertEqual(result.sources, [Source(label="Plain Course")])
 
     def test_sources_track_course_and_lesson(self):
         self.store.search.return_value = make_results(
@@ -108,7 +111,7 @@ class TestCourseSearchTool(unittest.TestCase):
             ],
         )
         result = self.tool.execute(query="x")
-        self.assertEqual(result.sources, ["C1 - Lesson 4", "C2 - Lesson 1"])
+        self.assertEqual([s.label for s in result.sources], ["C1 - Lesson 4", "C2 - Lesson 1"])
 
     def test_sources_belong_to_each_call_not_the_shared_tool(self):
         self.store.search.side_effect = [
@@ -117,8 +120,38 @@ class TestCourseSearchTool(unittest.TestCase):
         ]
         first = self.tool.execute(query="x")
         second = self.tool.execute(query="y")
-        self.assertEqual(first.sources, ["C1 - Lesson 1"])
-        self.assertEqual(second.sources, ["C2 - Lesson 2"])
+        self.assertEqual([s.label for s in first.sources], ["C1 - Lesson 1"])
+        self.assertEqual([s.label for s in second.sources], ["C2 - Lesson 2"])
+
+    def test_sources_carry_the_lesson_link(self):
+        self.store.get_lesson_link.return_value = "https://x.test/l4"
+        self.store.search.return_value = make_results(
+            ["a"], [{"course_title": "C1", "lesson_number": 4}]
+        )
+        result = self.tool.execute(query="x")
+        self.assertEqual(result.sources, [Source(label="C1 - Lesson 4", url="https://x.test/l4")])
+        self.store.get_lesson_link.assert_called_once_with("C1", 4)
+
+    def test_source_falls_back_to_the_course_link(self):
+        self.store.get_course_link.return_value = "https://x.test/course"
+        self.store.search.return_value = make_results(
+            ["a"], [{"course_title": "C1", "lesson_number": 4}]
+        )
+        self.assertEqual(self.tool.execute(query="x").sources[0].url, "https://x.test/course")
+
+    def test_course_level_source_uses_the_course_link_only(self):
+        self.store.get_course_link.return_value = "https://x.test/course"
+        self.store.search.return_value = make_results(
+            ["a"], [{"course_title": "C1", "lesson_number": None}]
+        )
+        self.assertEqual(self.tool.execute(query="x").sources[0].url, "https://x.test/course")
+        self.store.get_lesson_link.assert_not_called()
+
+    def test_repeated_sources_are_listed_once(self):
+        self.store.search.return_value = make_results(
+            ["a", "b"], [{"course_title": "C1", "lesson_number": 1}] * 2
+        )
+        self.assertEqual(len(self.tool.execute(query="x").sources), 1)
 
 
 class TestToolManager(unittest.TestCase):

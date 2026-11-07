@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import openai
 from ai_generator import AIGenerator, LLMRateLimitError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from models import Source
 from search_tools import ToolResult
 
 
@@ -112,10 +113,10 @@ class TestAIGenerator(unittest.TestCase):
         self.llm.invoke.return_value = make_message("Final answer")
         tool_manager = MagicMock()
         tool_manager.execute_tool.return_value = ToolResult(
-            "SEARCH RESULT", ["Course A - Lesson 1"]
+            "SEARCH RESULT", [Source(label="Course A - Lesson 1")]
         )
 
-        sources: list[str] = []
+        sources: list[Source] = []
         result = self.generator.generate_response(
             "q",
             tools=[{"type": "function", "function": {"name": "search_course_content"}}],
@@ -124,7 +125,7 @@ class TestAIGenerator(unittest.TestCase):
         )
 
         self.assertEqual(result, "Final answer")
-        self.assertEqual(sources, ["Course A - Lesson 1"])
+        self.assertEqual([x.label for x in sources], ["Course A - Lesson 1"])
         tool_manager.execute_tool.assert_called_once_with("search_course_content", query="rag")
         self.assertEqual(self.bound.invoke.call_count, 1)
         self.assertEqual(self.llm.invoke.call_count, 1)

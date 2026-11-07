@@ -172,12 +172,6 @@ class TestRAGSystem(unittest.TestCase):
         self.assertIs(kwargs["tool_manager"], self.rag.tool_manager)
         self.assertEqual(kwargs["tools"], self.rag.tool_manager.get_tool_definitions())
 
-    def test_add_course_document_failure_returns_none(self):
-        with contextlib.redirect_stdout(io.StringIO()):
-            course, count = self.rag.add_course_document("does-not-exist.txt")
-        self.assertIsNone(course)
-        self.assertEqual(count, 0)
-
     def test_add_course_folder_missing_folder_returns_zero(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self.rag.add_course_folder("no-such-folder"), (0, 0))

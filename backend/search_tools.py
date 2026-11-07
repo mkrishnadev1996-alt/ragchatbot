@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langsmith import traceable
+from models import Source
 from vector_store import SearchResults, VectorStore
 
 
@@ -15,7 +16,7 @@ class ToolResult:
     """
 
     text: str
-    sources: list[str] = field(default_factory=list)
+    sources: list[Source] = field(default_factory=list)
 
 
 class Tool(ABC):
@@ -115,7 +116,7 @@ class CourseSearchTool(Tool):
     def _format_results(self, results: SearchResults) -> ToolResult:
         """Format search results with course and lesson context"""
         formatted = []
-        sources = []  # Track sources for the UI
+        sources: dict[str, Source] = {}  # label -> Source, so each citation appears once
 
         for doc, meta in zip(results.documents, results.metadata, strict=True):
             course_title = meta.get("course_title", "unknown")
@@ -127,15 +128,23 @@ class CourseSearchTool(Tool):
                 header += f" - Lesson {lesson_num}"
             header += "]"
 
-            # Track source for the UI
-            source = course_title
+            # Track source for the UI, linking to the lesson (or the course) when known
+            label = course_title
             if lesson_num is not None:
-                source += f" - Lesson {lesson_num}"
-            sources.append(source)
+                label += f" - Lesson {lesson_num}"
+            if label not in sources:
+                sources[label] = Source(label=label, url=self._link(course_title, lesson_num))
 
             formatted.append(f"{header}\n{doc}")
 
-        return ToolResult("\n\n".join(formatted), sources)
+        return ToolResult("\n\n".join(formatted), list(sources.values()))
+
+    def _link(self, course_title: str, lesson_num: int | None) -> str | None:
+        """The lesson link if there is one, otherwise the course link"""
+        url = None
+        if lesson_num is not None:
+            url = self.store.get_lesson_link(course_title, lesson_num)
+        return url or self.store.get_course_link(course_title)
 
 
 class ToolManager:

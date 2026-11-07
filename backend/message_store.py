@@ -6,9 +6,16 @@ import sqlite3
 from contextlib import closing
 
 from feedback_store import FEEDBACK_SCHEMA
+from models import Source
 from utils.db import connect
 
 logger = logging.getLogger(__name__)
+
+
+def _load_sources(raw: str | None) -> list[dict]:
+    """Stored sources; rows saved before links existed hold plain label strings"""
+    items = json.loads(raw) if raw else []
+    return [{"label": i, "url": None} if isinstance(i, str) else i for i in items]
 
 
 class MessageStore:
@@ -41,7 +48,7 @@ class MessageStore:
         session_id: str,
         question: str,
         answer: str,
-        sources: list[str],
+        sources: list[Source],
         message_id: str,
     ) -> None:
         """Save a question and its answer atomically."""
@@ -58,7 +65,13 @@ class MessageStore:
                 INSERT INTO messages (user_id, session_id, message_id, role, content, sources)
                 VALUES (?, ?, ?, 'assistant', ?, ?)
                 """,
-                (user_id, session_id, message_id, answer, json.dumps(sources)),
+                (
+                    user_id,
+                    session_id,
+                    message_id,
+                    answer,
+                    json.dumps([s.model_dump() for s in sources]),
+                ),
             )
 
     def list_messages(
@@ -82,7 +95,7 @@ class MessageStore:
             {
                 "role": role,
                 "content": content,
-                "sources": json.loads(sources) if sources else [],
+                "sources": _load_sources(sources),
                 "message_id": message_id,
                 "rating": rating,
             }

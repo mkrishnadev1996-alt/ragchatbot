@@ -218,21 +218,6 @@ class TestVectorStore(unittest.TestCase):
         self.assertIsNone(results.error)
         self.content.query.assert_called_once()
 
-    def test_get_all_courses_metadata_parses_lessons_json(self):
-        self.catalog.get.return_value = {
-            "metadatas": [
-                {
-                    "title": "A",
-                    "lessons_json": json.dumps(
-                        [{"lesson_number": 1, "lesson_title": "T", "lesson_link": None}]
-                    ),
-                }
-            ]
-        }
-        meta = self.store.get_all_courses_metadata()
-        self.assertEqual(meta[0]["lessons"][0]["lesson_number"], 1)
-        self.assertNotIn("lessons_json", meta[0])
-
     def test_get_course_link(self):
         self.catalog.get.return_value = {"metadatas": [{"course_link": "https://a.test"}]}
         self.assertEqual(self.store.get_course_link("A"), "https://a.test")

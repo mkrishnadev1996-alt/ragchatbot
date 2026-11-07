@@ -926,3 +926,24 @@ details[open] .suggested-header::before {
     color: var(--text-secondary);
     text-align: center;
 }
+
+/* Linked sources (course and lesson links open in a new tab) */
+a.source-chip,
+a.source-course-link {
+    color: var(--text-primary);
+    text-decoration: none;
+}
+
+a.source-chip:hover,
+a.source-course-link:hover {
+    text-decoration: underline;
+}
+
+a.source-chip:hover {
+    background: rgba(37, 99, 235, 0.4);
+}
+
+.suggested-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
