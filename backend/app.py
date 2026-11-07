@@ -7,14 +7,16 @@ import math
 import os
 
 from ai_generator import LLMRateLimitError
+from auth import create_auth
 from config import config
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rag_system import RAGSystem
+from user_store import User, UserStore
 from utils.logging_config import setup_logging
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
@@ -38,6 +40,13 @@ app.add_middleware(
 
 # Initialize RAG system
 rag_system = RAGSystem(config)
+
+# Authentication. The router must be included before the catch-all static mount below.
+user_store = UserStore(config.USERS_DB_PATH)
+auth_router, get_current_user = create_auth(
+    user_store, config.JWT_SECRET, config.JWT_EXPIRE_MINUTES
+)
+app.include_router(auth_router)
 
 
 # Pydantic models for request/response
@@ -67,13 +76,16 @@ class CourseStats(BaseModel):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(request: QueryRequest, user: User = Depends(get_current_user)):
     """Process a query and return response with sources"""
     try:
         # Create session if not provided
         session_id = request.session_id
         if not session_id:
-            session_id = rag_system.session_manager.create_session()
+            session_id = rag_system.session_manager.create_session(user.id)
+        elif not rag_system.session_manager.is_owner(session_id, user.id):
+            # Unknown and foreign sessions look the same, so ids can't be probed
+            raise HTTPException(status_code=404, detail="Session not found")
 
         logger.info("Query received (session=%s, %d chars)", session_id, len(request.query))
         logger.debug("Query text (session=%s): %s", session_id, request.query)
@@ -82,6 +94,8 @@ async def query_documents(request: QueryRequest):
         answer, sources = rag_system.query(request.query, session_id)
 
         return QueryResponse(answer=answer, sources=sources, session_id=session_id)
+    except HTTPException:
+        raise
     except LLMRateLimitError as e:
         logger.warning("Returning 429 to client: LLM rate limit (retry_after=%s)", e.retry_after)
         headers = None

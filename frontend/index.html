@@ -7,9 +7,13 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>Course Materials Assistant</title>
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
+    <div id="userMenu" class="user-menu" hidden>
+        <span id="userEmail" class="user-email"></span>
+        <button id="logoutButton" class="link-button" type="button">Log out</button>
+    </div>
     <div class="container">
         <header>
             <h1>Course Materials Assistant</h1>
@@ -75,7 +79,25 @@
     </div>
 
 
+    <!-- Login / register modal -->
+    <div id="authModal" class="modal" hidden>
+        <form id="authForm" class="modal-card" novalidate>
+            <h2 id="authTitle">Log in</h2>
+            <label for="authEmail">Email</label>
+            <input type="email" id="authEmail" autocomplete="email" required>
+            <label for="authPassword">Password</label>
+            <input type="password" id="authPassword" autocomplete="current-password"
+                   minlength="8" required>
+            <p id="authError" class="auth-error" role="alert" hidden></p>
+            <button type="submit" id="authSubmit" class="primary-button">Log in</button>
+            <p class="auth-switch">
+                <span id="authSwitchText">No account?</span>
+                <button type="button" id="authSwitch" class="link-button">Register</button>
+            </p>
+        </form>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="script.js?v=9"></script>
+    <script src="script.js?v=11"></script>
 </body>
 </html>

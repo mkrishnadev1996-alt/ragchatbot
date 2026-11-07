@@ -36,7 +36,9 @@ An optional input guard screens every question before it reaches the main LLM. I
    LLM_API_KEY=your_api_key_here
    LLM_BASE_URL=https://api.groq.com/openai/v1
    LLM_MODEL=llama-3.3-70b-versatile
+   JWT_SECRET=a_long_random_string
    ```
+   `JWT_SECRET` signs login tokens and is required (generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`). Users register and log in from the web UI; accounts are stored in `backend/users.db` (SQLite) and the chat requires being logged in.
    For Google Gemini instead, use `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/` and `LLM_MODEL=gemini-2.5-flash`. See `.env.example`.
 
    **Input guard (optional).** To enable it, also set:
@@ -44,6 +46,20 @@ An optional input guard screens every question before it reaches the main LLM. I
    GUARD_API_KEY=your_openrouter_api_key_here
    ```
    It uses `respan/span-01-lite:free` through the OpenRouter Decisions API (alpha) and blocks a question when any of its harmful, jailbreak or out-of-scope scores reaches `GUARD_THRESHOLD` (default `0.5`). Optional overrides: `GUARD_URL`, `GUARD_MODEL`, `GUARD_THRESHOLD`. Without `GUARD_API_KEY` the guard is off and every question goes to the LLM. If the guard service errors, the question is allowed through. The out-of-scope check is tuned to the current AI/software courses, so adjust `InputGuard.BEHAVIORS` in `backend/input_guard.py` if you add courses on other subjects.
+
+## Accounts and API
+
+Chat requires an account. Open the app, choose **Register** in the login dialog, enter an email and a password of at least 8 characters, and you are logged in; later visits use **Log in**. Your email and a **Log out** link appear in the top-right corner. Logging out only clears the token in your browser; it stays valid until it expires (`JWT_EXPIRE_MINUTES`, default 1440).
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `POST /api/auth/register` | none | Create an account, returns `{token, user}` (409 if the email exists) |
+| `POST /api/auth/login` | none | Returns `{token, user}` (401 on bad credentials) |
+| `GET /api/auth/me` | bearer | Current user |
+| `POST /api/query` | bearer | Ask a question (401 without a valid token) |
+| `GET /api/courses` | none | Course catalog stats |
+
+Send the token as `Authorization: Bearer <token>`. Login and register are rate-limited per IP.
 
 ## Running the Application
 

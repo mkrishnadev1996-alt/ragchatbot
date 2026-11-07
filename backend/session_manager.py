@@ -1,3 +1,4 @@
+import secrets
 from dataclasses import dataclass
 
 
@@ -15,14 +16,18 @@ class SessionManager:
     def __init__(self, max_history: int = 5):
         self.max_history = max_history
         self.sessions: dict[str, list[Message]] = {}
-        self.session_counter = 0
+        self.owners: dict[str, int | None] = {}
 
-    def create_session(self) -> str:
-        """Create a new conversation session"""
-        self.session_counter += 1
-        session_id = f"session_{self.session_counter}"
+    def create_session(self, user_id: int | None = None) -> str:
+        """Create a new conversation session with an unguessable id, owned by user_id"""
+        session_id = f"session_{secrets.token_urlsafe(16)}"
         self.sessions[session_id] = []
+        self.owners[session_id] = user_id
         return session_id
+
+    def is_owner(self, session_id: str, user_id: int) -> bool:
+        """True only if the session exists and belongs to user_id"""
+        return session_id in self.sessions and self.owners.get(session_id) == user_id
 
     def add_message(self, session_id: str, role: str, content: str):
         """Add a message to the conversation history"""

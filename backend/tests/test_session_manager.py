@@ -12,6 +12,19 @@ class TestSessionManager(unittest.TestCase):
         self.assertIn(first, manager.sessions)
         self.assertIn(second, manager.sessions)
 
+    def test_session_ids_are_unguessable(self):
+        manager = SessionManager(max_history=2)
+        ids = {manager.create_session() for _ in range(50)}
+        self.assertEqual(len(ids), 50)
+        self.assertNotIn("session_1", ids)
+
+    def test_is_owner(self):
+        manager = SessionManager(max_history=2)
+        session_id = manager.create_session(user_id=1)
+        self.assertTrue(manager.is_owner(session_id, 1))
+        self.assertFalse(manager.is_owner(session_id, 2))
+        self.assertFalse(manager.is_owner("missing", 1))
+
     def test_new_session_has_no_history(self):
         manager = SessionManager(max_history=2)
         session_id = manager.create_session()

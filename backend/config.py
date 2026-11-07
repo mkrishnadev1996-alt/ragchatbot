@@ -22,6 +22,11 @@ class Config:
     GUARD_MODEL: str = os.getenv("GUARD_MODEL", "respan/span-01-lite:free")
     GUARD_THRESHOLD: float = float(os.getenv("GUARD_THRESHOLD", "0.5"))  # block when P >= this
 
+    # Authentication (JWT bearer tokens, users stored in SQLite)
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "")
+    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24)))
+    USERS_DB_PATH: str = os.getenv("USERS_DB_PATH", "./users.db")
+
     # Embedding model settings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 

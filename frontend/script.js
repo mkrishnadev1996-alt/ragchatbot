@@ -3,6 +3,23 @@ const API_URL = '/api';
 
 // Global state
 let currentSessionId = null;
+let authToken = null;
+let authMode = 'login'; // 'login' | 'register'
+
+const TOKEN_KEY = 'authToken';
+
+// localStorage can throw (private mode, blocked site data), so never rely on it
+function loadToken() {
+    try { return localStorage.getItem(TOKEN_KEY); } catch (_) { return null; }
+}
+
+function saveToken(token) {
+    authToken = token;
+    try {
+        if (token) localStorage.setItem(TOKEN_KEY, token);
+        else localStorage.removeItem(TOKEN_KEY);
+    } catch (_) { /* token just lives for this page view */ }
+}
 
 // DOM elements
 let chatMessages, chatInput, sendButton, totalCourses, courseTitles;
@@ -17,9 +34,114 @@ document.addEventListener('DOMContentLoaded', () => {
     courseTitles = document.getElementById('courseTitles');
     
     setupEventListeners();
+    setupAuth();
     createNewSession();
     loadCourseStats();
 });
+
+// Auth
+function setupAuth() {
+    document.getElementById('authForm').addEventListener('submit', submitAuth);
+    document.getElementById('authSwitch').addEventListener('click', () => {
+        setAuthMode(authMode === 'login' ? 'register' : 'login');
+    });
+    document.getElementById('logoutButton').addEventListener('click', logout);
+
+    authToken = loadToken();
+    if (authToken) {
+        // Validate the stored token; falls back to the login modal if it's stale
+        authFetch(`${API_URL}/auth/me`)
+            .then(res => res.ok ? res.json() : null)
+            .then(user => { if (user) showUser(user); })
+            .catch(() => showAuthModal());
+    } else {
+        showAuthModal();
+    }
+}
+
+function setAuthMode(mode) {
+    authMode = mode;
+    const login = mode === 'login';
+    document.getElementById('authTitle').textContent = login ? 'Log in' : 'Create account';
+    document.getElementById('authSubmit').textContent = login ? 'Log in' : 'Register';
+    document.getElementById('authSwitchText').textContent = login ? 'No account?' : 'Have an account?';
+    document.getElementById('authSwitch').textContent = login ? 'Register' : 'Log in';
+    document.getElementById('authPassword').autocomplete = login ? 'current-password' : 'new-password';
+    setAuthError('');
+}
+
+function setAuthError(message) {
+    const el = document.getElementById('authError');
+    el.textContent = message;
+    el.hidden = !message;
+}
+
+function showAuthModal() {
+    document.getElementById('userMenu').hidden = true;
+    document.getElementById('authModal').hidden = false;
+    document.getElementById('authEmail').focus();
+}
+
+function showUser(user) {
+    document.getElementById('authModal').hidden = true;
+    document.getElementById('userEmail').textContent = user.email;
+    document.getElementById('userMenu').hidden = false;
+    chatInput.focus();
+}
+
+async function submitAuth(event) {
+    event.preventDefault();
+    const email = document.getElementById('authEmail').value.trim();
+    const password = document.getElementById('authPassword').value;
+    const submit = document.getElementById('authSubmit');
+
+    if (!email || password.length < 8) {
+        setAuthError('Enter an email and a password of at least 8 characters.');
+        return;
+    }
+
+    submit.disabled = true;
+    setAuthError('');
+    try {
+        const response = await fetch(`${API_URL}/auth/${authMode}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            // 422 detail is a list of validation errors; show a generic message for it
+            const detail = typeof data.detail === 'string' ? data.detail : 'Please check your email and password.';
+            throw new Error(detail);
+        }
+        saveToken(data.token);
+        document.getElementById('authPassword').value = '';
+        createNewSession(); // a new account/login starts a fresh conversation
+        showUser(data.user);
+    } catch (error) {
+        setAuthError(error.message || 'Something went wrong. Please try again.');
+    } finally {
+        submit.disabled = false;
+    }
+}
+
+function logout() {
+    saveToken(null);
+    createNewSession();
+    showAuthModal();
+}
+
+// fetch wrapper that attaches the bearer token and handles expired sessions
+async function authFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) {
+        saveToken(null);
+        showAuthModal();
+    }
+    return response;
+}
 
 // Event Listeners
 function setupEventListeners() {
@@ -60,7 +182,7 @@ async function sendMessage() {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 
     try {
-        const response = await fetch(`${API_URL}/query`, {
+        const response = await authFetch(`${API_URL}/query`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -74,7 +196,13 @@ async function sendMessage() {
         if (!response.ok) {
             let message = 'Query failed';
             // Only surface the server's message for rate limits; other errors stay generic
-            if (response.status === 429) {
+            if (response.status === 401) {
+                message = 'Your session expired. Please log in again.';
+            } else if (response.status === 404) {
+                // Session unknown to the server (e.g. it restarted): start fresh
+                currentSessionId = null;
+                message = 'Your conversation was reset. Please ask again.';
+            } else if (response.status === 429) {
                 message = 'The AI service is busy. Please try again in a moment.';
                 try {
                     const err = await response.json();
@@ -182,7 +310,7 @@ async function loadCourseStats() {
         if (courseTitles) {
             if (data.course_titles && data.course_titles.length > 0) {
                 courseTitles.innerHTML = data.course_titles
-                    .map(title => `<div class="course-title-item">${title}</div>`)
+                    .map(title => `<div class="course-title-item">${escapeHtml(title)}</div>`)
                     .join('');
             } else {
                 courseTitles.innerHTML = '<span class="no-courses">No courses available</span>';

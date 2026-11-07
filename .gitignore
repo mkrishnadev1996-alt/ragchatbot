@@ -30,3 +30,6 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# User accounts
+backend/users.db

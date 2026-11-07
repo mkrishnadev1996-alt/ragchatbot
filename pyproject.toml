@@ -14,10 +14,13 @@ dependencies = [
     "openai==3.42.1",
     "langchain-openai>=1.7.4",
     "langchain-core>=1.7.6",
+    "pyjwt>=2.15.1",
+    "email-validator>=2.3.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mypy>=2.4.1",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
@@ -33,6 +36,10 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency injection uses Depends(...) in argument defaults
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.ruff.lint.per-file-ignores]
 # app.py must set the warnings filter before importing rag_system (which pulls in chromadb)
