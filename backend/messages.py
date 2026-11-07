@@ -21,7 +21,7 @@ def create_messages_router(store: MessageStore, get_current_user: Callable[..., 
     router = APIRouter(prefix="/api/messages", tags=["messages"])
 
     @router.get("", response_model=list[StoredMessage])
-    def list_messages(user: User = Depends(get_current_user)):
-        return store.list_messages(user.id)
+    def list_messages(session_id: str | None = None, user: User = Depends(get_current_user)):
+        return store.list_messages(user.id, session_id=session_id)
 
     return router
