@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 
+from config import config
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
@@ -23,7 +24,9 @@ _DUMMY_HASH = hash_password("dummy-password")
 
 class Credentials(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(
+        min_length=config.PASSWORD_MIN_LENGTH, max_length=config.PASSWORD_MAX_LENGTH
+    )
 
 
 class UserOut(BaseModel):

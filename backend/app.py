@@ -74,7 +74,10 @@ rag_system = RAGSystem(config)
 # Authentication. The router must be included before the catch-all static mount below.
 user_store = UserStore(config.USERS_DB_PATH)
 auth_router, get_current_user = create_auth(
-    user_store, config.JWT_SECRET, config.JWT_EXPIRE_MINUTES
+    user_store,
+    config.JWT_SECRET,
+    config.JWT_EXPIRE_MINUTES,
+    RateLimiter(max_attempts=config.AUTH_RATE_LIMIT, window_seconds=config.AUTH_RATE_WINDOW),
 )
 app.include_router(auth_router)
 
@@ -83,7 +86,9 @@ app.include_router(create_feedback_router(FeedbackStore(config.USERS_DB_PATH), g
 
 # Persisted chat history, replayed in the UI after login
 message_store = MessageStore(config.USERS_DB_PATH)
-app.include_router(create_messages_router(message_store, get_current_user))
+app.include_router(
+    create_messages_router(message_store, get_current_user, config.MAX_STORED_MESSAGES)
+)
 
 
 # Pydantic models for request/response
@@ -194,7 +199,7 @@ def query_documents(request: QueryRequest, user: User = Depends(limit_queries)):
 async def get_client_config(response: Response):
     """Public client-side limits, so the UI never hardcodes them"""
     # Fixed for the life of the process (read from the environment at startup)
-    response.headers["Cache-Control"] = "public, max-age=3600"
+    response.headers["Cache-Control"] = f"public, max-age={config.CONFIG_CACHE_SECONDS}"
     return {"max_query_length": config.MAX_QUERY_LENGTH}
 
 
@@ -204,7 +209,7 @@ async def get_course_stats(response: Response):
     try:
         analytics = rag_system.get_course_analytics()
         # Courses are only ingested at startup, so a short browser cache is safe
-        response.headers["Cache-Control"] = "public, max-age=60"
+        response.headers["Cache-Control"] = f"public, max-age={config.COURSES_CACHE_SECONDS}"
         return CourseStats(
             total_courses=analytics["total_courses"], course_titles=analytics["course_titles"]
         )

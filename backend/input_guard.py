@@ -49,7 +49,10 @@ class InputGuard:
         ),
     }
 
-    def __init__(self, api_key: str, url: str, model: str, threshold: float = 0.5):
+    def __init__(
+        self, api_key: str, url: str, model: str, threshold: float = 0.5, timeout: float = 10.0
+    ):
+        self.timeout = timeout
         self.api_key = api_key
         self.url = url
         self.model = model
@@ -91,7 +94,7 @@ class InputGuard:
             self.url,
             headers={"Authorization": f"Bearer {self.api_key}"},
             json=self._request_body(query, history),
-            timeout=10.0,
+            timeout=self.timeout,
         )
         response.raise_for_status()
         answers = response.json()["answers"]

@@ -40,13 +40,26 @@ class RAGSystem:
         self.vector_store = VectorStore(
             config.CHROMA_PATH, config.EMBEDDING_MODEL, config.MAX_RESULTS
         )
-        self.ai_generator = AIGenerator(config.LLM_API_KEY, config.LLM_BASE_URL, config.LLM_MODEL)
+        self.ai_generator = AIGenerator(
+            config.LLM_API_KEY,
+            config.LLM_BASE_URL,
+            config.LLM_MODEL,
+            max_tokens=config.LLM_MAX_TOKENS,
+            temperature=config.LLM_TEMPERATURE,
+            max_retries=config.LLM_MAX_RETRIES,
+        )
         self.session_manager = SessionManager(config.MAX_HISTORY)
 
         # Optional pre-LLM safety/scope check; off when no guard API key is configured
         guard_key = getattr(config, "GUARD_API_KEY", "")
         self.input_guard = (
-            InputGuard(guard_key, config.GUARD_URL, config.GUARD_MODEL, config.GUARD_THRESHOLD)
+            InputGuard(
+                guard_key,
+                config.GUARD_URL,
+                config.GUARD_MODEL,
+                config.GUARD_THRESHOLD,
+                config.GUARD_TIMEOUT,
+            )
             if guard_key
             else None
         )
