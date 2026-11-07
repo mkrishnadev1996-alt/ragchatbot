@@ -57,6 +57,7 @@ class RAGSystem:
             config.MAX_HISTORY,
             ttl_seconds=getattr(config, "SESSION_TTL_SECONDS", 0),
             max_sessions=getattr(config, "MAX_SESSIONS", 0),
+            max_history_chars=getattr(config, "MAX_HISTORY_CHARS", 0),
         )
 
         # Optional pre-LLM safety/scope check; off when no guard API key is configured

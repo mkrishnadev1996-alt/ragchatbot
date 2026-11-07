@@ -1,0 +1,17 @@
+# Single-node deployment. Expects a .env file (see .env.example) with LLM_API_KEY, JWT_SECRET, ...
+# Put a TLS-terminating reverse proxy in front, then set ALLOWED_HOSTS / ALLOWED_ORIGINS,
+# ENABLE_HSTS=true and FORWARDED_ALLOW_IPS to match it.
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    ports:
+      - "8000:8000"
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+
+volumes:
+  app-data:

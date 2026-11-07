@@ -15,8 +15,17 @@ class Message:
 class SessionManager:
     """Manages conversation sessions and message history"""
 
-    def __init__(self, max_history: int = 5, ttl_seconds: float = 0, max_sessions: int = 0):
+    def __init__(
+        self,
+        max_history: int = 5,
+        ttl_seconds: float = 0,
+        max_sessions: int = 0,
+        max_history_chars: int = 0,
+    ):
         self.max_history = max_history
+        # Budget for the history handed to the LLM (0 = unlimited): oldest messages are
+        # dropped first, and a single message larger than the budget is cut to fit.
+        self.max_history_chars = max_history_chars
         # Idle sessions older than ttl_seconds are dropped; beyond max_sessions the least
         # recently used go first. 0 disables either limit.
         self.ttl_seconds = ttl_seconds
@@ -96,4 +105,23 @@ class SessionManager:
         if not messages:
             return None
 
-        return [{"role": msg.role, "content": msg.content} for msg in messages]
+        return self._fit_budget([{"role": m.role, "content": m.content} for m in messages])
+
+    def _fit_budget(self, messages: list[dict[str, str]]) -> list[dict[str, str]] | None:
+        """Keep the newest messages whose combined length fits max_history_chars"""
+        budget = self.max_history_chars
+        if not budget:
+            return messages
+        kept: list[dict[str, str]] = []
+        for msg in reversed(messages):
+            size = len(msg["content"])
+            if size > budget:
+                if not kept:  # newest message alone is too big: keep its tail
+                    kept.append({**msg, "content": msg["content"][-budget:]})
+                break
+            kept.append(msg)
+            budget -= size
+        kept.reverse()
+        while kept and kept[0]["role"] != "user":  # providers expect a question first
+            kept.pop(0)
+        return kept or None

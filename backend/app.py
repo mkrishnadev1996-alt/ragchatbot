@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 
 from ai_generator import LLMRateLimitError
 from auth import RateLimiter, create_auth
@@ -16,7 +16,7 @@ from config import config
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from feedback import create_feedback_router
 from feedback_store import FeedbackStore
@@ -28,7 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_system import QueryResult, RAGSystem
 from user_store import User, UserStore
 from utils.body_limit import BodySizeLimitMiddleware
+from utils.db import connect
 from utils.logging_config import setup_logging
+from utils.migrations import migrate
 from utils.security_headers import SecurityHeadersMiddleware
 
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
@@ -38,7 +40,15 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Load the initial documents on startup"""
-    docs_path = "../docs"
+    if config.MESSAGE_RETENTION_DAYS:
+        try:
+            removed = message_store.purge_older_than(config.MESSAGE_RETENTION_DAYS)
+            logger.info(
+                "Purged %d messages older than %d days", removed, config.MESSAGE_RETENTION_DAYS
+            )
+        except Exception:
+            logger.exception("Message retention purge failed")
+    docs_path = config.DOCS_PATH
     if os.path.exists(docs_path):
         logger.info("Loading initial documents from %s", docs_path)
         try:
@@ -57,12 +67,27 @@ async def lifespan(_app: FastAPI):
 
 
 # Initialize FastAPI app
-app = FastAPI(title="Course Materials RAG System", root_path="", lifespan=lifespan)
+# Interactive docs and the schema are off when ENABLE_API_DOCS=false (production)
+app = FastAPI(
+    title="Course Materials RAG System",
+    root_path="",
+    lifespan=lifespan,
+    docs_url="/docs" if config.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if config.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if config.ENABLE_API_DOCS else None,
+)
 
 
 def _csv(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
+
+for _name, _value in (
+    ("ALLOWED_HOSTS", config.ALLOWED_HOSTS),
+    ("ALLOWED_ORIGINS", config.ALLOWED_ORIGINS),
+):
+    if "*" in _csv(_value):
+        logger.warning("%s is '*' (any); set it to explicit values in production", _name)
 
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=config.MAX_BODY_BYTES)
 
@@ -90,6 +115,8 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
 }
+if config.ENABLE_HSTS:
+    SECURITY_HEADERS["Strict-Transport-Security"] = f"max-age={config.HSTS_MAX_AGE}"
 
 
 # Pure ASGI (not @app.middleware("http")) so streamed responses aren't wrapped and client
@@ -121,6 +148,9 @@ message_store = MessageStore(config.USERS_DB_PATH)
 app.include_router(
     create_messages_router(message_store, get_current_user, config.MAX_STORED_MESSAGES)
 )
+
+# All stores have created their tables; apply versioned schema changes (indexes, ...)
+migrate(config.USERS_DB_PATH)
 
 
 # Pydantic models for request/response
@@ -160,7 +190,16 @@ query_limiter = RateLimiter(
 
 
 def limit_queries(user: User = Depends(get_current_user)) -> User:
-    """Authenticate, then apply the per-user query rate limit."""
+    """Authenticate, then apply the daily quota and the per-user query rate limit."""
+    if config.DAILY_QUERY_QUOTA:
+        used = message_store.count_questions_since(user.id, 24)
+        if used >= config.DAILY_QUERY_QUOTA:
+            logger.warning("Daily quota reached (user=%s, used=%d)", user.id, used)
+            raise HTTPException(
+                status_code=429,
+                detail="Daily question limit reached. Please try again tomorrow.",
+                headers={"Retry-After": "3600"},
+            )
     query_limiter.check(f"user:{user.id}")
     return user
 
@@ -311,6 +350,37 @@ async def healthz():
     return {"status": "ok"}
 
 
+def _check_sqlite() -> None:
+    with closing(connect(config.USERS_DB_PATH)) as conn:
+        conn.execute("SELECT 1").fetchone()
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness probe: no auth; 503 unless the vector store and the sqlite file both work.
+
+    Plain `def` so the blocking checks run in the threadpool. The LLM and guard providers are
+    deliberately not probed: it would cost a call per probe, and their outages are reported
+    per request instead.
+    """
+    checks = {}
+    for name, check in (
+        ("vector_store", rag_system.vector_store.get_course_count),
+        ("database", _check_sqlite),
+    ):
+        try:
+            check()
+            checks[name] = "ok"
+        except Exception:
+            logger.exception("Readiness check failed: %s", name)
+            checks[name] = "failed"
+    ready = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        {"status": "ready" if ready else "unavailable", "checks": checks},
+        status_code=200 if ready else 503,
+    )
+
+
 @app.get("/api/config")
 async def get_client_config(response: Response):
     """Public client-side limits, so the UI never hardcodes them"""
@@ -334,4 +404,4 @@ async def get_course_stats(response: Response):
 
 
 # Serve static files for the frontend
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
+app.mount("/", StaticFiles(directory=config.FRONTEND_PATH, html=True), name="static")

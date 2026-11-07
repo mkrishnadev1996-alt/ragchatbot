@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
 
 @dataclass
 class Config:
@@ -41,12 +44,7 @@ class Config:
     # LangSmith tracing is switched on by LANGSMITH_TRACING / LANGSMITH_API_KEY / LANGSMITH_PROJECT,
     # which LangChain reads straight from the environment. This flag controls whether prompts,
     # answers and tool I/O are sent with the traces (false = traces carry timing/structure only).
-    LANGSMITH_CAPTURE_IO: bool = os.getenv("LANGSMITH_CAPTURE_IO", "true").lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    LANGSMITH_CAPTURE_IO: bool = os.getenv("LANGSMITH_CAPTURE_IO", "true").lower() not in _FALSE
 
     # Embedding model settings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
@@ -60,17 +58,28 @@ class Config:
     # words 1.61-1.84.
     COURSE_MATCH_MAX_DISTANCE: float = float(os.getenv("COURSE_MATCH_MAX_DISTANCE", "1.6"))
     MAX_HISTORY: int = 2  # Exchanges (question + answer pairs) to remember
+    # Character budget for the history sent to the LLM (~4 chars per token). Oldest messages
+    # are dropped first; 0 disables the budget.
+    MAX_HISTORY_CHARS: int = int(os.getenv("MAX_HISTORY_CHARS", "6000"))
     MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))  # Max chars per question
 
     # Per-user rate limit on /api/query (each query costs an LLM call)
     QUERY_RATE_LIMIT: int = int(os.getenv("QUERY_RATE_LIMIT", "20"))  # Max queries per window
     QUERY_RATE_WINDOW: int = int(os.getenv("QUERY_RATE_WINDOW", "60"))  # Window in seconds
+    # Per-user cap on questions in any rolling 24 h, counted from the persisted messages table
+    # (so it holds across restarts and workers). 0 disables it.
+    DAILY_QUERY_QUOTA: int = int(os.getenv("DAILY_QUERY_QUOTA", "500"))
 
     # Network exposure. Comma-separated lists; "*" allows any. Auth uses bearer tokens (not
     # cookies), so CORS credentials are never enabled.
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
     ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "*")
     MAX_BODY_BYTES: int = int(os.getenv("MAX_BODY_BYTES", str(64 * 1024)))  # Request body cap
+    # Swagger UI / ReDoc / openapi.json. Set ENABLE_API_DOCS=false in production.
+    ENABLE_API_DOCS: bool = os.getenv("ENABLE_API_DOCS", "true").lower() not in _FALSE
+    # Strict-Transport-Security. Only enable when the site is served over HTTPS.
+    ENABLE_HSTS: bool = os.getenv("ENABLE_HSTS", "false").lower() in _TRUE
+    HSTS_MAX_AGE: int = int(os.getenv("HSTS_MAX_AGE", str(365 * 24 * 3600)))
 
     # In-memory session expiry (idle time) and cap on live sessions
     SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", str(24 * 3600)))
@@ -78,11 +87,16 @@ class Config:
 
     # Message history and HTTP caching
     MAX_STORED_MESSAGES: int = 200  # Messages returned by GET /api/messages
+    # Stored chat messages older than this many days are deleted at startup. 0 keeps them forever.
+    MESSAGE_RETENTION_DAYS: int = int(os.getenv("MESSAGE_RETENTION_DAYS", "0"))
     CONFIG_CACHE_SECONDS: int = 3600  # Cache-Control max-age for /api/config
     COURSES_CACHE_SECONDS: int = 60  # Cache-Control max-age for /api/courses
 
-    # Database paths
-    CHROMA_PATH: str = "./chroma_db"  # ChromaDB storage location
+    # Storage and content locations (relative paths resolve against the working directory,
+    # which must be backend/ when started outside Docker)
+    CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db")  # ChromaDB storage location
+    DOCS_PATH: str = os.getenv("DOCS_PATH", "../docs")  # Course documents ingested at startup
+    FRONTEND_PATH: str = os.getenv("FRONTEND_PATH", "../frontend")  # Static UI
 
     # Logging settings
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR

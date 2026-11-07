@@ -74,6 +74,26 @@ class MessageStore:
                 ),
             )
 
+    def count_questions_since(self, user_id: int, hours: float = 24) -> int:
+        """How many questions the user has asked in the last `hours` (for the daily quota)."""
+        with closing(self._connect()) as conn:
+            (count,) = conn.execute(
+                """
+                SELECT COUNT(*) FROM messages
+                WHERE user_id = ? AND role = 'user' AND created_at >= datetime('now', ?)
+                """,
+                (user_id, f"-{hours} hours"),
+            ).fetchone()
+        return count
+
+    def purge_older_than(self, days: float) -> int:
+        """Delete messages older than `days` days; returns how many rows were removed."""
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "DELETE FROM messages WHERE created_at < datetime('now', ?)", (f"-{days} days",)
+            )
+            return cur.rowcount
+
     def list_messages(
         self, user_id: int, limit: int = 200, session_id: str | None = None
     ) -> list[dict]:
