@@ -17,6 +17,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from feedback import create_feedback_router
 from feedback_store import FeedbackStore
+from message_store import MessageStore
+from messages import create_messages_router
 from pydantic import BaseModel
 from rag_system import RAGSystem
 from user_store import User, UserStore
@@ -53,6 +55,10 @@ app.include_router(auth_router)
 
 # Thumbs up/down feedback on answers (same sqlite file as the users table)
 app.include_router(create_feedback_router(FeedbackStore(config.USERS_DB_PATH), get_current_user))
+
+# Persisted chat history, replayed in the UI after login
+message_store = MessageStore(config.USERS_DB_PATH)
+app.include_router(create_messages_router(message_store, get_current_user))
 
 
 # Pydantic models for request/response
@@ -107,8 +113,17 @@ async def query_documents(request: QueryRequest, user: User = Depends(get_curren
             },
         )
 
+        message_id = uuid.uuid4().hex
+        try:
+            message_store.add_exchange(
+                user.id, session_id, request.query, answer, sources, message_id
+            )
+        except Exception:
+            # Losing history is better than failing an answer we already generated
+            logger.exception("Failed to persist exchange (session=%s)", session_id)
+
         return QueryResponse(
-            answer=answer, sources=sources, session_id=session_id, message_id=uuid.uuid4().hex
+            answer=answer, sources=sources, session_id=session_id, message_id=message_id
         )
     except HTTPException:
         raise

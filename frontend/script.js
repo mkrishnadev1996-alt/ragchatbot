@@ -87,6 +87,21 @@ function showUser(user) {
     document.getElementById('userEmail').textContent = user.email;
     document.getElementById('userMenu').hidden = false;
     chatInput.focus();
+    loadHistory();
+}
+
+// Replay the user's saved conversation below the welcome message
+async function loadHistory() {
+    try {
+        const response = await authFetch(`${API_URL}/messages`);
+        if (!response.ok) return;
+        const messages = await response.json();
+        for (const m of messages) {
+            addMessage(m.content, m.role, m.sources, false, m.message_id, m.rating);
+        }
+    } catch (error) {
+        console.error('Error loading history:', error);
+    }
 }
 
 async function submitAuth(event) {
@@ -249,7 +264,7 @@ function createLoadingMessage() {
     return messageDiv;
 }
 
-function addMessage(content, type, sources = null, isWelcome = false, feedbackId = null) {
+function addMessage(content, type, sources = null, isWelcome = false, feedbackId = null, rating = null) {
     const messageId = Date.now();
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}${isWelcome ? ' welcome-message' : ''}`;
@@ -270,7 +285,7 @@ function addMessage(content, type, sources = null, isWelcome = false, feedbackId
     }
     
     messageDiv.innerHTML = html;
-    if (feedbackId) messageDiv.appendChild(createFeedbackControls(feedbackId, currentSessionId));
+    if (feedbackId) messageDiv.appendChild(createFeedbackControls(feedbackId, currentSessionId, rating));
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -278,14 +293,14 @@ function addMessage(content, type, sources = null, isWelcome = false, feedbackId
 }
 
 // Thumbs up/down under an answer. Clicking the active thumb again clears the rating.
-function createFeedbackControls(feedbackId, sessionId) {
+function createFeedbackControls(feedbackId, sessionId, initialRating = null) {
     const bar = document.createElement('div');
     bar.className = 'feedback';
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', 'Rate this answer');
 
     const buttons = {};
-    let current = null;
+    let current = initialRating;
 
     const render = () => {
         for (const [rating, button] of Object.entries(buttons)) {
