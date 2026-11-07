@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.
 import logging
 import math
 import os
+import uuid
 
 from ai_generator import LLMRateLimitError
 from auth import create_auth
@@ -14,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from feedback import create_feedback_router
+from feedback_store import FeedbackStore
 from pydantic import BaseModel
 from rag_system import RAGSystem
 from user_store import User, UserStore
@@ -48,6 +51,9 @@ auth_router, get_current_user = create_auth(
 )
 app.include_router(auth_router)
 
+# Thumbs up/down feedback on answers (same sqlite file as the users table)
+app.include_router(create_feedback_router(FeedbackStore(config.USERS_DB_PATH), get_current_user))
+
 
 # Pydantic models for request/response
 class QueryRequest(BaseModel):
@@ -63,6 +69,7 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[str]
     session_id: str
+    message_id: str  # identifies this answer when the client sends feedback on it
 
 
 class CourseStats(BaseModel):
@@ -100,7 +107,9 @@ async def query_documents(request: QueryRequest, user: User = Depends(get_curren
             },
         )
 
-        return QueryResponse(answer=answer, sources=sources, session_id=session_id)
+        return QueryResponse(
+            answer=answer, sources=sources, session_id=session_id, message_id=uuid.uuid4().hex
+        )
     except HTTPException:
         raise
     except LLMRateLimitError as e:

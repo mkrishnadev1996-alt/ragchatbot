@@ -221,7 +221,7 @@ async function sendMessage() {
 
         // Replace loading message with response
         loadingMessage.remove();
-        addMessage(data.answer, 'assistant', data.sources);
+        addMessage(data.answer, 'assistant', data.sources, false, data.message_id);
 
     } catch (error) {
         // Replace loading message with error
@@ -249,7 +249,7 @@ function createLoadingMessage() {
     return messageDiv;
 }
 
-function addMessage(content, type, sources = null, isWelcome = false) {
+function addMessage(content, type, sources = null, isWelcome = false, feedbackId = null) {
     const messageId = Date.now();
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}${isWelcome ? ' welcome-message' : ''}`;
@@ -270,10 +270,68 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     }
     
     messageDiv.innerHTML = html;
+    if (feedbackId) messageDiv.appendChild(createFeedbackControls(feedbackId, currentSessionId));
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-    
+
     return messageId;
+}
+
+// Thumbs up/down under an answer. Clicking the active thumb again clears the rating.
+function createFeedbackControls(feedbackId, sessionId) {
+    const bar = document.createElement('div');
+    bar.className = 'feedback';
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Rate this answer');
+
+    const buttons = {};
+    let current = null;
+
+    const render = () => {
+        for (const [rating, button] of Object.entries(buttons)) {
+            const active = current === rating;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', String(active));
+        }
+    };
+
+    const makeButton = (rating, label, icon) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'feedback-button';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.textContent = icon;
+        button.addEventListener('click', async () => {
+            const previous = current;
+            current = current === rating ? null : rating;
+            render(); // optimistic; rolled back below if the request fails
+            try {
+                const response = await authFetch(`${API_URL}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message_id: feedbackId,
+                        rating: current,
+                        session_id: sessionId
+                    })
+                });
+                if (!response.ok) throw new Error('Feedback failed');
+            } catch (_) {
+                current = previous;
+                render();
+            }
+        });
+        buttons[rating] = button;
+        return button;
+    };
+
+    bar.append(
+        makeButton('up', 'Good answer', '👍'),
+        makeButton('down', 'Bad answer', '👎')
+    );
+    render();
+    return bar;
 }
 
 // Group sources ("Course - Lesson N") by course, dedupe, and render as chips
