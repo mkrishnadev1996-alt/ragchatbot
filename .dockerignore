@@ -1,13 +1,27 @@
+# Never in the image
 .git
 .github
-.venv
 .env
-.mypy_cache
-.pytest_cache
-.ruff_cache
+.venv
+.claude
 .playwright-mcp
-__pycache__
-*.pyc
+
+# Caches, local state and logs (backend/.mypy_cache alone is ~180 MB)
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/__pycache__
+**/*.pyc
+**/*.log
+**/*.db
+**/*.db-*
 backend/chroma_db
-backend/users.db*
+backend/backend
+
+# Not needed at runtime
 backend/tests
+*.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+.env.example

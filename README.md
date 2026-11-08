@@ -133,7 +133,7 @@ See `.env.example` for the full list.
 docker compose up --build
 ```
 
-This starts PostgreSQL (with pgvector, holding users, messages and the course vectors), Redis, a one-off `ingest` job that indexes `docs/`, and the app on port 8000, with data kept in Docker volumes. Re-index after adding courses with `docker compose run --rm ingest python ingest.py`. Put a TLS-terminating reverse proxy in front, and set `FORWARDED_ALLOW_IPS` to its address so per-IP rate limits see real client IPs. The image has not been size-optimised: on Linux `sentence-transformers` pulls the CUDA build of PyTorch.
+This starts PostgreSQL (with pgvector, holding users, messages and the course vectors), Redis, a one-off `ingest` job that indexes `docs/`, and the app on port 8000, with data kept in Docker volumes. Re-index after adding courses with `docker compose run --rm ingest python ingest.py`. Put a TLS-terminating reverse proxy in front, and set `FORWARDED_ALLOW_IPS` to its address so per-IP rate limits see real client IPs. The image is about 2.1 GB: on Linux it uses the CPU build of PyTorch (the app only does CPU inference), and the `ingest` job reuses the app's image.
 
 **Scaling out:** with this stack all state is outside the app container (PostgreSQL, Redis), so you can run several app containers behind a load balancer (`docker compose up --scale app=3` after removing the fixed `ports:` mapping). Each container still loads the local embedding model unless you switch `EMBEDDING_PROVIDER`.
 
