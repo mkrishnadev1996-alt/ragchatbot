@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass
 
@@ -22,6 +23,13 @@ class Config:
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0"))
     LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))  # SDK retries on 429/5xx
     LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "60"))  # Seconds per LLM request
+    # Fallback chain. LLM_PROVIDERS="groq,nvidia,google" tries each provider's models in order
+    # (see llm_provider_settings); empty = the single LLM_* endpoint above. A rate-limited or
+    # failing endpoint is skipped for a cooldown (a 429 uses its Retry-After, within bounds).
+    LLM_PROVIDERS: str = os.getenv("LLM_PROVIDERS", "")
+    LLM_BREAKER_FAILURES: int = int(os.getenv("LLM_BREAKER_FAILURES", "3"))  # failures in a row
+    LLM_BREAKER_COOLDOWN: float = float(os.getenv("LLM_BREAKER_COOLDOWN", "60"))  # seconds
+    LLM_BREAKER_MAX_COOLDOWN: float = float(os.getenv("LLM_BREAKER_MAX_COOLDOWN", "900"))
     # The model may call the search tool repeatedly (model -> tool -> model rounds); this
     # caps the rounds per question as a cost/runaway guard. 1 = the old single search.
     MAX_TOOL_ROUNDS: int = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
@@ -43,6 +51,8 @@ class Config:
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     # Redis for sessions and rate limits (redis://host:6379/0). Empty = in-memory, per process.
     REDIS_URL: str = os.getenv("REDIS_URL", "")
+    # Shortest JWT_SECRET the server will start with
+    JWT_MIN_SECRET_LENGTH: int = int(os.getenv("JWT_MIN_SECRET_LENGTH", "32"))
     PASSWORD_MIN_LENGTH: int = 8
     PASSWORD_MAX_LENGTH: int = 128
     AUTH_RATE_LIMIT: int = int(
@@ -115,6 +125,40 @@ class Config:
     CONFIG_CACHE_SECONDS: int = 3600  # Cache-Control max-age for /api/config
     COURSES_CACHE_SECONDS: int = 60  # Cache-Control max-age for /api/courses
 
+    # Request field limits and the Retry-After hint sent when the daily quota is used up
+    MAX_SESSION_ID_LENGTH: int = int(os.getenv("MAX_SESSION_ID_LENGTH", "128"))
+    MAX_MESSAGE_ID_LENGTH: int = int(os.getenv("MAX_MESSAGE_ID_LENGTH", "64"))
+    DAILY_QUOTA_RETRY_AFTER: int = int(os.getenv("DAILY_QUOTA_RETRY_AFTER", "3600"))  # seconds
+
+    # Database connections: sqlite busy wait, and the PostgreSQL pool (see DATABASE_POOL_SIZE)
+    DB_BUSY_TIMEOUT: float = float(os.getenv("DB_BUSY_TIMEOUT", "10"))  # sqlite lock wait, s
+    DATABASE_POOL_MIN: int = int(os.getenv("DATABASE_POOL_MIN", "1"))
+    DATABASE_POOL_TIMEOUT: float = float(os.getenv("DATABASE_POOL_TIMEOUT", "10"))  # get a conn
+    DATABASE_CONNECT_TIMEOUT: float = float(os.getenv("DATABASE_CONNECT_TIMEOUT", "5"))
+    DATABASE_STARTUP_WAIT: float = float(os.getenv("DATABASE_STARTUP_WAIT", "15"))  # first conn
+
+    # Redis client (sessions and rate limits)
+    REDIS_TIMEOUT: float = float(os.getenv("REDIS_TIMEOUT", "2"))  # connect and read, seconds
+    REDIS_HEALTH_CHECK_INTERVAL: int = int(os.getenv("REDIS_HEALTH_CHECK_INTERVAL", "30"))
+
+    # Hybrid search (pgvector): Reciprocal Rank Fusion constant, how many candidates each of
+    # the two rankings fetches (max(wanted * factor, minimum)), the most question words used
+    # for the keyword side, and how long corpus word counts are cached (seconds)
+    HYBRID_RRF_K: int = int(os.getenv("HYBRID_RRF_K", "60"))
+    HYBRID_CANDIDATE_FACTOR: int = int(os.getenv("HYBRID_CANDIDATE_FACTOR", "4"))
+    HYBRID_MIN_CANDIDATES: int = int(os.getenv("HYBRID_MIN_CANDIDATES", "20"))
+    HYBRID_MAX_KEYWORDS: int = int(os.getenv("HYBRID_MAX_KEYWORDS", "20"))
+    KEYWORD_STATS_CACHE_SECONDS: int = int(os.getenv("KEYWORD_STATS_CACHE_SECONDS", "300"))
+
+    # Embedding calls: texts per request, per-request timeout and attempts (openai provider)
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
+    EMBEDDING_TIMEOUT: float = float(os.getenv("EMBEDDING_TIMEOUT", "30"))
+    EMBEDDING_MAX_ATTEMPTS: int = int(os.getenv("EMBEDDING_MAX_ATTEMPTS", "3"))
+
+    # Input guard: how much recent conversation it sees, to resolve follow-ups like "and lesson 3?"
+    GUARD_HISTORY_MESSAGES: int = int(os.getenv("GUARD_HISTORY_MESSAGES", "4"))
+    GUARD_HISTORY_CHARS: int = int(os.getenv("GUARD_HISTORY_CHARS", "300"))  # per message
+
     # Storage and content locations (relative paths resolve against the working directory,
     # which must be backend/ when started outside Docker)
     CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db")  # ChromaDB storage location
@@ -127,6 +171,95 @@ class Config:
     # Logging settings
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
     LOG_FILE: str | None = os.getenv("LOG_FILE") or None  # Optional rotating log file path
+    LOG_MAX_BYTES: int = int(os.getenv("LOG_MAX_BYTES", str(5 * 1024 * 1024)))  # per file
+    LOG_BACKUP_COUNT: int = int(os.getenv("LOG_BACKUP_COUNT", "3"))  # rotated files kept
+
+
+# Providers known by name: OpenAI-compatible base URL and free-tier models, best first.
+# Override per provider with <NAME>_BASE_URL / <NAME>_MODELS; the key is <NAME>_API_KEY.
+KNOWN_LLM_PROVIDERS: dict[str, dict[str, str]] = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": "openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b",
+    },
+    "nvidia": {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "models": "nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-3.5-lightning-30b-a3b",
+    },
+    "google": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "models": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        # Gemini 3 needs its thought_signature echoed on tool calls, which LangChain drops
+        "flatten_tool_messages": "true",
+    },
+}
+
+
+# Accepted spellings of a provider name (the env variable prefix stays as written)
+LLM_PROVIDER_ALIASES = {"grok": "groq"}  # "grok" here means Groq (api.groq.com), not xAI
+
+
+def _first_set(environ, *keys: str) -> str:
+    return next((environ[k] for k in keys if environ.get(k)), "")
+
+
+def llm_provider_settings(names: str, environ=os.environ) -> list[dict]:
+    """Settings for each provider in the comma-separated `names`, in order.
+
+    Per provider NAME (upper-cased), the first of these that is set wins:
+      key       NAME_API_KEY | NAME_LLM_API_KEY      (required: no key = provider skipped, so
+                                                       one chain works on machines with only
+                                                       some of the keys)
+      base URL  NAME_BASE_URL | NAME_LLM_BASE_URL    (default from KNOWN_LLM_PROVIDERS)
+      models    NAME_MODELS, a comma list, best first (default from KNOWN_LLM_PROVIDERS)
+      preferred NAME_LLM_MODEL | NAME_MODEL          (optional single model, tried first,
+                                                       then the models above)
+      flatten   NAME_FLATTEN_TOOL_MESSAGES=true|false  (send tool turns as plain text; on for
+                                                       google, see llm_router.flatten_tool_turns)
+    Unknown names need a base URL and models. Returns dicts with name, base_url, api_key and
+    models (a list without duplicates).
+    """
+    out = []
+    for raw in names.split(","):
+        name = raw.strip().lower()
+        if not name:
+            continue
+        prefix = name.upper().replace("-", "_")
+        known = KNOWN_LLM_PROVIDERS.get(LLM_PROVIDER_ALIASES.get(name, name), {})
+        api_key = _first_set(environ, f"{prefix}_API_KEY", f"{prefix}_LLM_API_KEY")
+        base_url = _first_set(environ, f"{prefix}_BASE_URL", f"{prefix}_LLM_BASE_URL") or known.get(
+            "base_url", ""
+        )
+        listed = (environ.get(f"{prefix}_MODELS") or known.get("models", "")).split(",")
+        preferred = _first_set(environ, f"{prefix}_LLM_MODEL", f"{prefix}_MODEL").strip()
+        # dict keys: de-duplicate while keeping order
+        models = list(dict.fromkeys(m.strip() for m in [preferred, *listed] if m and m.strip()))
+        if not api_key or not base_url or not models:
+            logging.getLogger(__name__).warning(
+                "LLM provider %r skipped: needs %s_API_KEY%s",
+                name,
+                prefix,
+                "" if known else f", {prefix}_BASE_URL and {prefix}_MODELS",
+            )
+            continue
+        flatten = (
+            environ.get(f"{prefix}_FLATTEN_TOOL_MESSAGES") or known.get("flatten_tool_messages", "")
+        ).lower() in ("1", "true", "yes", "on")
+        out.append(
+            {
+                "name": name,
+                "base_url": base_url,
+                "api_key": api_key,
+                "models": models,
+                "flatten_tool_messages": flatten,
+            }
+        )
+    return out
+
+
+def setting(cfg, name: str):
+    """`cfg.<name>`, falling back to the Config default when `cfg` lacks it (test stand-ins)"""
+    return getattr(cfg, name, getattr(Config, name))
 
 
 config = Config()

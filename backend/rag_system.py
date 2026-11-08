@@ -5,16 +5,18 @@ from collections.abc import AsyncGenerator
 from typing import NamedTuple
 
 from ai_generator import AIGenerator
+from config import llm_provider_settings, setting
 from document_processor import DocumentProcessor
 from embeddings import create_embedder
 from input_guard import InputGuard
 from langsmith import get_current_run_tree, traceable
+from llm_router import ProviderSpec
 from models import Course, Source
 from pg_vector_store import PgVectorStore
 from search_tools import CourseSearchTool, ToolManager
 from session_manager import RedisSessionManager, SessionManager
 from utils.db import Database
-from utils.redis_client import get_redis
+from utils.redis_client import redis_from_config
 from vector_backend import VectorStoreBackend
 from vector_store import VectorStore
 
@@ -52,8 +54,12 @@ class RAGSystem:
             max_tokens=config.LLM_MAX_TOKENS,
             temperature=config.LLM_TEMPERATURE,
             max_retries=config.LLM_MAX_RETRIES,
-            timeout=getattr(config, "LLM_TIMEOUT", 60),
-            max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 3),
+            timeout=setting(config, "LLM_TIMEOUT"),
+            max_tool_rounds=setting(config, "MAX_TOOL_ROUNDS"),
+            providers=self._llm_providers(config),
+            breaker_failures=setting(config, "LLM_BREAKER_FAILURES"),
+            breaker_cooldown=setting(config, "LLM_BREAKER_COOLDOWN"),
+            breaker_max_cooldown=setting(config, "LLM_BREAKER_MAX_COOLDOWN"),
         )
         ttl_seconds = getattr(config, "SESSION_TTL_SECONDS", 0)
         max_sessions = getattr(config, "MAX_SESSIONS", 0)
@@ -62,7 +68,7 @@ class RAGSystem:
         self.session_manager: SessionManager
         if redis_url:
             self.session_manager = RedisSessionManager(
-                get_redis(redis_url),
+                redis_from_config(config),
                 config.MAX_HISTORY,
                 ttl_seconds=ttl_seconds,
                 max_sessions=max_sessions,
@@ -85,6 +91,8 @@ class RAGSystem:
                 config.GUARD_MODEL,
                 config.GUARD_THRESHOLD,
                 config.GUARD_TIMEOUT,
+                history_messages=setting(config, "GUARD_HISTORY_MESSAGES"),
+                history_chars=setting(config, "GUARD_HISTORY_CHARS"),
             )
             if guard_key
             else None
@@ -175,6 +183,24 @@ class RAGSystem:
         return total_courses, total_chunks
 
     @staticmethod
+    def _llm_providers(config) -> list[ProviderSpec] | None:
+        """The fallback chain from LLM_PROVIDERS, or None for the single LLM_* endpoint"""
+        names = getattr(config, "LLM_PROVIDERS", "")
+        if not names:
+            return None
+        specs = [ProviderSpec(**s) for s in llm_provider_settings(names)]
+        if not specs:
+            raise RuntimeError(
+                f"LLM_PROVIDERS={names!r} but none of those providers has an API key "
+                "(set e.g. GROQ_API_KEY)"
+            )
+        logger.info(
+            "LLM chain: %s",
+            " -> ".join(f"{s.name}[{', '.join(s.models)}]" for s in specs),
+        )
+        return specs
+
+    @staticmethod
     def _create_vector_store(config, database: Database | None) -> VectorStoreBackend:
         """The backend chosen by VECTOR_BACKEND (pgvector needs the shared PostgreSQL)."""
         backend = getattr(config, "VECTOR_BACKEND", "chroma")
@@ -189,8 +215,13 @@ class RAGSystem:
                 create_embedder(config),
                 config.MAX_RESULTS,
                 max_course_distance=max_distance,
-                hybrid=getattr(config, "HYBRID_SEARCH", True),
-                keyword_max_doc_fraction=getattr(config, "KEYWORD_MAX_DOC_FRACTION", 0.05),
+                hybrid=setting(config, "HYBRID_SEARCH"),
+                keyword_max_doc_fraction=setting(config, "KEYWORD_MAX_DOC_FRACTION"),
+                rrf_k=setting(config, "HYBRID_RRF_K"),
+                candidate_factor=setting(config, "HYBRID_CANDIDATE_FACTOR"),
+                min_candidates=setting(config, "HYBRID_MIN_CANDIDATES"),
+                max_keywords=setting(config, "HYBRID_MAX_KEYWORDS"),
+                stats_cache_seconds=setting(config, "KEYWORD_STATS_CACHE_SECONDS"),
             )
         if backend != "chroma":
             raise ValueError(f"Unknown VECTOR_BACKEND {backend!r} (use 'chroma' or 'pgvector')")

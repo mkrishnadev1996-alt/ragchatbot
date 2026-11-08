@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import embeddings
 import httpx
 import pytest
+from config import Config
 from embeddings import OpenAICompatibleEmbeddings, create_embedder, normalize
 from models import Course, CourseChunk, Lesson
 from pg_vector_store import (
@@ -229,7 +230,12 @@ def test_pgvector_backend_is_built_with_config(light_rag):
         5,
         max_course_distance=1.2,
         hybrid=False,
-        keyword_max_doc_fraction=0.05,
+        keyword_max_doc_fraction=Config.KEYWORD_MAX_DOC_FRACTION,
+        rrf_k=Config.HYBRID_RRF_K,
+        candidate_factor=Config.HYBRID_CANDIDATE_FACTOR,
+        min_candidates=Config.HYBRID_MIN_CANDIDATES,
+        max_keywords=Config.HYBRID_MAX_KEYWORDS,
+        stats_cache_seconds=Config.KEYWORD_STATS_CACHE_SECONDS,
     )
     assert rag.vector_store is store.return_value
     light_rag.assert_not_called()  # Chroma untouched

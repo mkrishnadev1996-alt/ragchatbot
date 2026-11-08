@@ -7,6 +7,13 @@ from typing import Any
 import openai
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
+from llm_router import (
+    CircuitBreaker,
+    Endpoint,
+    LLMRouter,
+    ProviderSpec,
+    flatten_tool_turns,
+)
 from models import Source
 from utils.http_utils import parse_retry_after
 
@@ -82,18 +89,40 @@ Provide only the direct answer to what was asked.
         max_retries: int = 3,
         timeout: float | None = 60,
         max_tool_rounds: int = 3,
+        providers: list[ProviderSpec] | None = None,
+        breaker_failures: int = 3,
+        breaker_cooldown: float = 60,
+        breaker_max_cooldown: float = 900,
     ):
-        # max_retries is passed to the OpenAI SDK, which retries 429s and 5xx with backoff
-        self.llm = ChatOpenAI(
-            model=model,
-            api_key=api_key,  # type: ignore[arg-type]
-            base_url=base_url,
-            temperature=temperature,
-            max_tokens=max_tokens,  # type: ignore[call-arg]
-            max_retries=max_retries,
-            timeout=timeout,
-        )
-        self.model = model
+        # The chain: every model of every provider, in order. Without `providers` it is the
+        # single endpoint given by api_key/base_url/model.
+        specs = providers or [ProviderSpec("default", base_url, api_key, [model])]
+        chain = [(spec, name) for spec in specs for name in spec.models]
+        endpoints = []
+        for position, (spec, name) in enumerate(chain):
+            # max_retries goes to the OpenAI SDK, which retries 429s, 5xx and timeouts with
+            # backoff. Only the last endpoint gets the full count: earlier ones hand over to the
+            # next endpoint at once instead of retrying (a slow model must not stall the chain).
+            is_last = position == len(chain) - 1
+            endpoints.append(
+                Endpoint(
+                    spec.name,
+                    name,
+                    ChatOpenAI(
+                        model=name,
+                        api_key=spec.api_key,  # type: ignore[arg-type]
+                        base_url=spec.base_url,
+                        temperature=temperature,
+                        max_tokens=max_tokens,  # type: ignore[call-arg]
+                        max_retries=max_retries if is_last else 0,
+                        timeout=timeout,
+                    ),
+                    CircuitBreaker(breaker_failures, breaker_cooldown, breaker_max_cooldown),
+                    adapt=flatten_tool_turns if spec.flatten_tool_messages else None,
+                )
+            )
+        self.llm = LLMRouter(endpoints)
+        self.model = chain[0][1]
         # Safety cap on model -> tools -> model rounds (cost and runaway-loop guard);
         # the model may search as often as it needs up to this many rounds.
         self.max_tool_rounds = max(1, max_tool_rounds)

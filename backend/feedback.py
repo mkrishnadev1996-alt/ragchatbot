@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Literal
 
+from config import config
 from fastapi import APIRouter, Depends
 from feedback_store import FeedbackStore
 from pydantic import BaseModel, Field
@@ -13,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class FeedbackRequest(BaseModel):
-    message_id: str = Field(min_length=1, max_length=64)
+    message_id: str = Field(min_length=1, max_length=config.MAX_MESSAGE_ID_LENGTH)
     # null clears a previously given rating (the user toggled their vote off)
     rating: Literal["up", "down"] | None
-    session_id: str | None = Field(default=None, max_length=128)
+    session_id: str | None = Field(default=None, max_length=config.MAX_SESSION_ID_LENGTH)
 
 
 def create_feedback_router(
