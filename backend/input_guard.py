@@ -50,28 +50,34 @@ class InputGuard:
     }
 
     def __init__(
-        self, api_key: str, url: str, model: str, threshold: float = 0.5, timeout: float = 10.0
+        self,
+        api_key: str,
+        url: str,
+        model: str,
+        threshold: float = 0.5,
+        timeout: float = 10.0,
+        history_messages: int = 4,
+        history_chars: int = 300,
     ):
         self.timeout = timeout
+        # How much of the conversation the guard sees, to resolve follow-ups like "and lesson 3?"
+        # (the app passes GUARD_HISTORY_MESSAGES / GUARD_HISTORY_CHARS)
+        self.history_messages = history_messages
+        self.history_chars = history_chars
         self.api_key = api_key
         self.url = url
         self.model = model
         self.threshold = threshold
         self._async_client: httpx.AsyncClient | None = None
 
-    # How much of the conversation the guard sees, to resolve follow-ups like "and lesson 3?"
-    HISTORY_MESSAGES = 4
-    HISTORY_CHARS = 300
-
-    @classmethod
-    def _state(cls, query: str, history: list[dict[str, str]] | None) -> str:
+    def _state(self, query: str, history: list[dict[str, str]] | None) -> str:
         """The text the guard judges: the current message, plus recent turns as context"""
         if not history:
             return query
         nl = chr(10)
         recent = nl.join(
-            f"{m['role']}: {m['content'][: cls.HISTORY_CHARS]}"
-            for m in history[-cls.HISTORY_MESSAGES :]
+            f"{m['role']}: {m['content'][: self.history_chars]}"
+            for m in history[-self.history_messages :]
         )
         return (
             f"Earlier conversation (context only):{nl}{recent}{nl}{nl}"

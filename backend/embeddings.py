@@ -15,6 +15,7 @@ import time
 from typing import Any, Protocol
 
 import httpx
+from config import setting
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +120,11 @@ class OpenAICompatibleEmbeddings:
 
 def create_embedder(config) -> EmbeddingProvider:
     """Build the provider chosen by EMBEDDING_PROVIDER."""
-    provider = getattr(config, "EMBEDDING_PROVIDER", "local")
+    provider = setting(config, "EMBEDDING_PROVIDER")
     if provider == "local":
-        return LocalEmbeddings(config.EMBEDDING_MODEL)
+        return LocalEmbeddings(
+            config.EMBEDDING_MODEL, batch_size=setting(config, "EMBEDDING_BATCH_SIZE")
+        )
     if provider == "openai":
         base_url = getattr(config, "EMBEDDING_BASE_URL", "")
         if not base_url:
@@ -131,5 +134,8 @@ def create_embedder(config) -> EmbeddingProvider:
             getattr(config, "EMBEDDING_API_KEY", ""),
             config.EMBEDDING_MODEL,
             getattr(config, "EMBEDDING_DIMENSIONS", 0),
+            timeout=setting(config, "EMBEDDING_TIMEOUT"),
+            batch_size=setting(config, "EMBEDDING_BATCH_SIZE"),
+            max_attempts=setting(config, "EMBEDDING_MAX_ATTEMPTS"),
         )
     raise ValueError(f"Unknown EMBEDDING_PROVIDER {provider!r} (use 'local' or 'openai')")

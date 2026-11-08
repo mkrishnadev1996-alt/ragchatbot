@@ -8,6 +8,8 @@ import time
 
 import jwt
 
+# Deliberately NOT in Config: the stored hash (scrypt$<salt>$<hash>) does not record these
+# parameters, so changing them would make every existing password fail to verify.
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
 _SCRYPT_P = 1

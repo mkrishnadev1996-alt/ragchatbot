@@ -17,8 +17,6 @@ from utils.security import create_token, decode_token, hash_password, verify_pas
 
 logger = logging.getLogger(__name__)
 
-MIN_SECRET_LENGTH = 32
-
 # A real hash to verify against when the email is unknown, so timing doesn't leak existence.
 _DUMMY_HASH = hash_password("dummy-password")
 
@@ -120,9 +118,10 @@ def create_auth(
     """Build the auth router and the ``get_current_user`` dependency."""
     if not secret:
         raise RuntimeError("JWT_SECRET is not set; refusing to start without auth configured")
-    if len(secret) < MIN_SECRET_LENGTH:
+    min_length = config.JWT_MIN_SECRET_LENGTH
+    if len(secret) < min_length:
         raise RuntimeError(
-            f"JWT_SECRET is too short ({len(secret)} chars); use at least {MIN_SECRET_LENGTH}, "
+            f"JWT_SECRET is too short ({len(secret)} chars); use at least {min_length}, "
             'e.g. python -c "import secrets; print(secrets.token_urlsafe(48))"'
         )
 

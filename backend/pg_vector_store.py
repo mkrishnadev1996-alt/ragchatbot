@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any
 
+from config import Config
 from embeddings import EmbeddingProvider
 from langsmith import traceable
 from models import Course, CourseChunk, chunk_id
@@ -30,19 +31,14 @@ from utils.db import Database
 
 logger = logging.getLogger(__name__)
 
-RRF_K = 60  # Reciprocal Rank Fusion constant: score = sum(1 / (RRF_K + rank))
-CANDIDATE_FACTOR = 4  # each ranking contributes this many times the requested results
-MIN_CANDIDATES = 20
-MAX_KEYWORDS = 20
-DOC_FREQ_CACHE_SECONDS = 300  # how long corpus word counts are reused
 _WORD = re.compile(r"[A-Za-z0-9]+")
 
 
-def rrf_fuse(rankings: list[list[str]], k: int = RRF_K) -> list[str]:
+def rrf_fuse(rankings: list[list[str]], k: int = Config.HYBRID_RRF_K) -> list[str]:
     """Merge ranked id lists into one: best combined 1/(k+rank) score first.
 
     An id found by several rankings beats one found by a single ranking at the same position.
-    Ties keep the order in which ids were first seen.
+    Ties keep the order in which ids were first seen. Score = sum(1 / (k + rank)).
     """
     scores: dict[str, float] = {}
     for ranking in rankings:
@@ -51,7 +47,7 @@ def rrf_fuse(rankings: list[list[str]], k: int = RRF_K) -> list[str]:
     return sorted(scores, key=lambda item: -scores[item])  # sorted() is stable
 
 
-def keyword_tokens(query: str) -> list[str]:
+def keyword_tokens(query: str, limit: int = Config.HYBRID_MAX_KEYWORDS) -> list[str]:
     """The question's distinct words (letters/digits only, lower-case, capped).
 
     Only [A-Za-z0-9] tokens survive, so user text can never produce a tsquery syntax error.
@@ -60,7 +56,7 @@ def keyword_tokens(query: str) -> list[str]:
     for token in _WORD.findall(query.lower()):
         if len(token) > 1:
             seen.setdefault(token)
-    return list(seen)[:MAX_KEYWORDS]
+    return list(seen)[:limit]
 
 
 def rare_lexemes(
@@ -92,7 +88,12 @@ class PgVectorStore:
         max_results: int = 5,
         max_course_distance: float | None = None,
         hybrid: bool = True,
-        keyword_max_doc_fraction: float = 0.05,
+        keyword_max_doc_fraction: float = Config.KEYWORD_MAX_DOC_FRACTION,
+        rrf_k: int = Config.HYBRID_RRF_K,
+        candidate_factor: int = Config.HYBRID_CANDIDATE_FACTOR,
+        min_candidates: int = Config.HYBRID_MIN_CANDIDATES,
+        max_keywords: int = Config.HYBRID_MAX_KEYWORDS,
+        stats_cache_seconds: float = Config.KEYWORD_STATS_CACHE_SECONDS,
     ):
         if database.dialect != "postgres":
             raise ValueError("PgVectorStore needs PostgreSQL (set DATABASE_URL)")
@@ -103,6 +104,11 @@ class PgVectorStore:
         self.max_course_distance = max_course_distance
         self.hybrid = hybrid
         self.keyword_max_doc_fraction = keyword_max_doc_fraction
+        self.rrf_k = rrf_k
+        self.candidate_factor = candidate_factor
+        self.min_candidates = min_candidates
+        self.max_keywords = max_keywords
+        self.stats_cache_seconds = stats_cache_seconds
         self._doc_freq: tuple[float, dict[str, int], int] | None = None
         self._doc_freq_lock = threading.Lock()
         self._meta = f"{embedder.model}|{embedder.dimensions}"
@@ -195,7 +201,7 @@ class PgVectorStore:
         self, query: str, course_title: str | None, lesson_number: int | None, wanted: int
     ) -> SearchResults:
         where, where_params = self._where(course_title, lesson_number)
-        pool = max(wanted * CANDIDATE_FACTOR, MIN_CANDIDATES)
+        pool = max(wanted * self.candidate_factor, self.min_candidates)
         qvec = _vector_literal(self.embedder.embed([query])[0])
         columns = (
             "id, course_title, lesson_number, chunk_index, content, embedding <-> ?::vector AS dist"
@@ -219,7 +225,9 @@ class PgVectorStore:
             conn.close()
 
         rows: dict[str, Any] = {r[0]: r for r in [*keyword_rows, *vector_rows]}
-        order = rrf_fuse([[r[0] for r in vector_rows], [r[0] for r in keyword_rows]])[:wanted]
+        order = rrf_fuse([[r[0] for r in vector_rows], [r[0] for r in keyword_rows]], self.rrf_k)[
+            :wanted
+        ]
         documents, metadata, distances = [], [], []
         for row_id in order:
             _, title, lesson, index, content, dist = rows[row_id]
@@ -233,7 +241,7 @@ class PgVectorStore:
 
     def _keyword_query(self, conn: Any, query: str) -> str:
         """tsquery of the question's rare words ("" -> skip the keyword ranking)"""
-        tokens = keyword_tokens(query)
+        tokens = keyword_tokens(query, self.max_keywords)
         if not tokens:
             return ""
         # Stem exactly as the indexed text was (this also drops stop words)
@@ -251,7 +259,7 @@ class PgVectorStore:
         """Chunks per lexeme and the chunk count, cached (writes here invalidate it)"""
         with self._doc_freq_lock:
             cached = self._doc_freq
-            if cached and time.monotonic() - cached[0] < DOC_FREQ_CACHE_SECONDS:
+            if cached and time.monotonic() - cached[0] < self.stats_cache_seconds:
                 return cached[1], cached[2]
         freq = {
             word: ndoc
