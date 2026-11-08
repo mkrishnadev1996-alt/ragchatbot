@@ -236,3 +236,27 @@ def test_api_docs_can_be_disabled(env, monkeypatch):
     assert off_client.get("/openapi.json").status_code == 404
     assert off_client.get("/docs").status_code == 404
     assert "max-age=" in off_client.get("/healthz").headers["Strict-Transport-Security"]
+
+
+def test_daily_quota_retry_after_comes_from_config(env, monkeypatch):
+    _, client, _ = env
+    monkeypatch.setattr(config, "DAILY_QUERY_QUOTA", 1)
+    monkeypatch.setattr(config, "DAILY_QUOTA_RETRY_AFTER", 123)
+    headers = register(client)
+    assert ask(client, headers).status_code == 200
+    res = ask(client, headers)
+    assert res.status_code == 429 and res.headers["Retry-After"] == "123"
+
+
+def test_session_id_length_limit_comes_from_config(env):
+    _, client, _ = env
+    headers = register(client)
+    limit = config.MAX_SESSION_ID_LENGTH
+    too_long = client.post(
+        "/api/query", json={"query": "hi", "session_id": "s" * (limit + 1)}, headers=headers
+    )
+    assert too_long.status_code == 422
+    at_limit = client.post(
+        "/api/query", json={"query": "hi", "session_id": "s" * limit}, headers=headers
+    )
+    assert at_limit.status_code == 404  # valid length, but not a session this user owns

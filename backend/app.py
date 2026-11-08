@@ -28,13 +28,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_system import QueryResult, RAGSystem
 from user_store import User, UserStore
 from utils.body_limit import BodySizeLimitMiddleware
-from utils.db import open_database
+from utils.db import open_database_from_config
 from utils.logging_config import setup_logging
 from utils.migrations import migrate
-from utils.redis_client import get_redis
+from utils.redis_client import redis_from_config
 from utils.security_headers import SecurityHeadersMiddleware
 
-setup_logging(config.LOG_LEVEL, config.LOG_FILE)
+setup_logging(config.LOG_LEVEL, config.LOG_FILE, config.LOG_MAX_BYTES, config.LOG_BACKUP_COUNT)
 logger = logging.getLogger(__name__)
 
 
@@ -132,13 +132,13 @@ app.add_middleware(
 
 
 # Shared state backends (declared first: the pgvector vector store uses the same PostgreSQL)
-database = open_database(config.DATABASE_URL, config.USERS_DB_PATH, config.DATABASE_POOL_SIZE)
+database = open_database_from_config(config)
 
 # Initialize RAG system
 rag_system = RAGSystem(config, database=database)
 
 # Authentication. The router must be included before the catch-all static mount below.
-redis_client = get_redis(config.REDIS_URL) if config.REDIS_URL else None
+redis_client = redis_from_config(config) if config.REDIS_URL else None
 
 
 def make_limiter(name: str, max_attempts: int, window_seconds: int, **kwargs) -> RateLimiter:
@@ -177,7 +177,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(min_length=1, max_length=config.MAX_QUERY_LENGTH)
-    session_id: str | None = Field(default=None, max_length=128)
+    session_id: str | None = Field(default=None, max_length=config.MAX_SESSION_ID_LENGTH)
 
 
 class QueryResponse(BaseModel):
@@ -216,7 +216,7 @@ def limit_queries(user: User = Depends(get_current_user)) -> User:
             raise HTTPException(
                 status_code=429,
                 detail="Daily question limit reached. Please try again tomorrow.",
-                headers={"Retry-After": "3600"},
+                headers={"Retry-After": str(config.DAILY_QUOTA_RETRY_AFTER)},
             )
     query_limiter.check(f"user:{user.id}")
     return user

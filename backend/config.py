@@ -51,6 +51,8 @@ class Config:
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     # Redis for sessions and rate limits (redis://host:6379/0). Empty = in-memory, per process.
     REDIS_URL: str = os.getenv("REDIS_URL", "")
+    # Shortest JWT_SECRET the server will start with
+    JWT_MIN_SECRET_LENGTH: int = int(os.getenv("JWT_MIN_SECRET_LENGTH", "32"))
     PASSWORD_MIN_LENGTH: int = 8
     PASSWORD_MAX_LENGTH: int = 128
     AUTH_RATE_LIMIT: int = int(
@@ -123,6 +125,40 @@ class Config:
     CONFIG_CACHE_SECONDS: int = 3600  # Cache-Control max-age for /api/config
     COURSES_CACHE_SECONDS: int = 60  # Cache-Control max-age for /api/courses
 
+    # Request field limits and the Retry-After hint sent when the daily quota is used up
+    MAX_SESSION_ID_LENGTH: int = int(os.getenv("MAX_SESSION_ID_LENGTH", "128"))
+    MAX_MESSAGE_ID_LENGTH: int = int(os.getenv("MAX_MESSAGE_ID_LENGTH", "64"))
+    DAILY_QUOTA_RETRY_AFTER: int = int(os.getenv("DAILY_QUOTA_RETRY_AFTER", "3600"))  # seconds
+
+    # Database connections: sqlite busy wait, and the PostgreSQL pool (see DATABASE_POOL_SIZE)
+    DB_BUSY_TIMEOUT: float = float(os.getenv("DB_BUSY_TIMEOUT", "10"))  # sqlite lock wait, s
+    DATABASE_POOL_MIN: int = int(os.getenv("DATABASE_POOL_MIN", "1"))
+    DATABASE_POOL_TIMEOUT: float = float(os.getenv("DATABASE_POOL_TIMEOUT", "10"))  # get a conn
+    DATABASE_CONNECT_TIMEOUT: float = float(os.getenv("DATABASE_CONNECT_TIMEOUT", "5"))
+    DATABASE_STARTUP_WAIT: float = float(os.getenv("DATABASE_STARTUP_WAIT", "15"))  # first conn
+
+    # Redis client (sessions and rate limits)
+    REDIS_TIMEOUT: float = float(os.getenv("REDIS_TIMEOUT", "2"))  # connect and read, seconds
+    REDIS_HEALTH_CHECK_INTERVAL: int = int(os.getenv("REDIS_HEALTH_CHECK_INTERVAL", "30"))
+
+    # Hybrid search (pgvector): Reciprocal Rank Fusion constant, how many candidates each of
+    # the two rankings fetches (max(wanted * factor, minimum)), the most question words used
+    # for the keyword side, and how long corpus word counts are cached (seconds)
+    HYBRID_RRF_K: int = int(os.getenv("HYBRID_RRF_K", "60"))
+    HYBRID_CANDIDATE_FACTOR: int = int(os.getenv("HYBRID_CANDIDATE_FACTOR", "4"))
+    HYBRID_MIN_CANDIDATES: int = int(os.getenv("HYBRID_MIN_CANDIDATES", "20"))
+    HYBRID_MAX_KEYWORDS: int = int(os.getenv("HYBRID_MAX_KEYWORDS", "20"))
+    KEYWORD_STATS_CACHE_SECONDS: int = int(os.getenv("KEYWORD_STATS_CACHE_SECONDS", "300"))
+
+    # Embedding calls: texts per request, per-request timeout and attempts (openai provider)
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
+    EMBEDDING_TIMEOUT: float = float(os.getenv("EMBEDDING_TIMEOUT", "30"))
+    EMBEDDING_MAX_ATTEMPTS: int = int(os.getenv("EMBEDDING_MAX_ATTEMPTS", "3"))
+
+    # Input guard: how much recent conversation it sees, to resolve follow-ups like "and lesson 3?"
+    GUARD_HISTORY_MESSAGES: int = int(os.getenv("GUARD_HISTORY_MESSAGES", "4"))
+    GUARD_HISTORY_CHARS: int = int(os.getenv("GUARD_HISTORY_CHARS", "300"))  # per message
+
     # Storage and content locations (relative paths resolve against the working directory,
     # which must be backend/ when started outside Docker)
     CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db")  # ChromaDB storage location
@@ -135,6 +171,8 @@ class Config:
     # Logging settings
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
     LOG_FILE: str | None = os.getenv("LOG_FILE") or None  # Optional rotating log file path
+    LOG_MAX_BYTES: int = int(os.getenv("LOG_MAX_BYTES", str(5 * 1024 * 1024)))  # per file
+    LOG_BACKUP_COUNT: int = int(os.getenv("LOG_BACKUP_COUNT", "3"))  # rotated files kept
 
 
 # Providers known by name: OpenAI-compatible base URL and free-tier models, best first.
@@ -217,6 +255,11 @@ def llm_provider_settings(names: str, environ=os.environ) -> list[dict]:
             }
         )
     return out
+
+
+def setting(cfg, name: str):
+    """`cfg.<name>`, falling back to the Config default when `cfg` lacks it (test stand-ins)"""
+    return getattr(cfg, name, getattr(Config, name))
 
 
 config = Config()

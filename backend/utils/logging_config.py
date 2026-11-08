@@ -32,7 +32,12 @@ NOISY_LOGGERS = (
 _installed_handlers: list[logging.Handler] = []
 
 
-def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
+def setup_logging(
+    level: str = "INFO",
+    log_file: str | None = None,
+    max_bytes: int = 5 * 1024 * 1024,
+    backup_count: int = 3,
+) -> None:
     """
     Configure the root logger with a console handler and an optional rotating file handler.
 
@@ -64,7 +69,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
         log_dir = os.path.dirname(os.path.abspath(log_file))
         os.makedirs(log_dir, exist_ok=True)
         file_handler = RotatingFileHandler(
-            log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
         file_handler.setFormatter(formatter)
         _installed_handlers.append(file_handler)
