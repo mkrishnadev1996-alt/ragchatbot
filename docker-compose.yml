@@ -44,7 +44,8 @@ services:
   # Indexes ../docs into Chroma, then exits. Re-run after adding courses:
   #   docker compose run --rm ingest python ingest.py [--clear]
   ingest:
-    build: .
+    image: ragchatbot-app:local  # the app's image (built by the app service below)
+    pull_policy: never
     env_file: .env
     environment: *app-env
     command: ["python", "ingest.py"]
@@ -54,6 +55,7 @@ services:
 
   app:
     build: .
+    image: ragchatbot-app:local
     env_file: .env
     environment:
       <<: *app-env

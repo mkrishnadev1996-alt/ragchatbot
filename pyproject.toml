@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "chromadb>=1.0.15",
     "sentence-transformers>=5.0.0",
+    "torch",  # direct so [tool.uv.sources] below can pick the CPU build on Linux
     "fastapi>=0.116.1",
     "uvicorn>=0.35.0",
     "python-dotenv>=1.1.1",
@@ -30,6 +31,17 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.3",
 ]
+
+# On Linux (the Docker image, CI) PyPI's torch is the CUDA build and drags in ~6 GB of nvidia-*
+# and triton wheels. The app only needs CPU inference, so Linux resolves torch from PyTorch's CPU
+# index; Windows and macOS wheels on PyPI are CPU builds already, so they are unaffected.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
