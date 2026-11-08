@@ -5,10 +5,12 @@ from collections.abc import AsyncGenerator
 from typing import NamedTuple
 
 from ai_generator import AIGenerator
+from config import llm_provider_settings
 from document_processor import DocumentProcessor
 from embeddings import create_embedder
 from input_guard import InputGuard
 from langsmith import get_current_run_tree, traceable
+from llm_router import ProviderSpec
 from models import Course, Source
 from pg_vector_store import PgVectorStore
 from search_tools import CourseSearchTool, ToolManager
@@ -54,6 +56,10 @@ class RAGSystem:
             max_retries=config.LLM_MAX_RETRIES,
             timeout=getattr(config, "LLM_TIMEOUT", 60),
             max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 3),
+            providers=self._llm_providers(config),
+            breaker_failures=getattr(config, "LLM_BREAKER_FAILURES", 3),
+            breaker_cooldown=getattr(config, "LLM_BREAKER_COOLDOWN", 60),
+            breaker_max_cooldown=getattr(config, "LLM_BREAKER_MAX_COOLDOWN", 900),
         )
         ttl_seconds = getattr(config, "SESSION_TTL_SECONDS", 0)
         max_sessions = getattr(config, "MAX_SESSIONS", 0)
@@ -173,6 +179,24 @@ class RAGSystem:
                     logger.exception("Error processing %s", file_name)
 
         return total_courses, total_chunks
+
+    @staticmethod
+    def _llm_providers(config) -> list[ProviderSpec] | None:
+        """The fallback chain from LLM_PROVIDERS, or None for the single LLM_* endpoint"""
+        names = getattr(config, "LLM_PROVIDERS", "")
+        if not names:
+            return None
+        specs = [ProviderSpec(**s) for s in llm_provider_settings(names)]
+        if not specs:
+            raise RuntimeError(
+                f"LLM_PROVIDERS={names!r} but none of those providers has an API key "
+                "(set e.g. GROQ_API_KEY)"
+            )
+        logger.info(
+            "LLM chain: %s",
+            " -> ".join(f"{s.name}[{', '.join(s.models)}]" for s in specs),
+        )
+        return specs
 
     @staticmethod
     def _create_vector_store(config, database: Database | None) -> VectorStoreBackend:
